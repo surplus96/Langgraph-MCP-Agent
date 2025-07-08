@@ -138,19 +138,7 @@ streamlit run app.py
 
 3. Use the sidebar to add and configure MCP tools
 
-Visit [Smithery](https://smithery.ai/) to find useful MCP servers.
-
-First, select the tool you want to use.
-
-Click the COPY button in the JSON configuration on the right.
-
-Paste the copied JSON string in the `Tool JSON` section.
-
-
-Click the `Add Tool` button to add it to the "Registered Tools List" section.
-
-Finally, click the "Apply" button to apply the changes to initialize the agent with the new tools.
-
+    Visit [Smithery](https://smithery.ai/) to find useful MCP servers.
 
 4. Check the agent's status.
 
