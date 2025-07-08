@@ -1,0 +1,28 @@
+{
+  "desktop-commander": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "@smithery/cli@latest",
+      "run",
+      "@wonderwhy-er/desktop-commander",
+      "--key",
+      "587b2ea0-48c9-48d1-9888-20c99c604c3d"
+    ],
+    "transport": "stdio"
+  },
+  "tavily-mcp": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "@smithery/cli@latest",
+      "run",
+      "@tavily-ai/tavily-mcp",
+      "--key",
+      "587b2ea0-48c9-48d1-9888-20c99c604c3d",
+      "--profile",
+      "rough-silverfish-LiFCE3"
+    ],
+    "transport": "stdio"
+  }
+}
