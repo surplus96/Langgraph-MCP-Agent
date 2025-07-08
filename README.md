@@ -145,7 +145,7 @@ streamlit run app.py
 
 5. Interact with the ReAct agent that utilizes the configured MCP tools by asking questions in the chat interface.
 
-<img src="https://github.com/surplus96/Langgraph-MCP-Agent/blob/main/assets/langgraph-mcp-agent-UI.png"> 
+<img src="https://github.com/surplus96/Langgraph-MCP-Agent/blob/main/assets/langgraph-mcp-agent-UI-01.png"> 
 
 
 ## License
