@@ -853,6 +853,7 @@ dependencies = [
     { name = "mcp", extra = ["cli"] },
     { name = "python-dotenv" },
     { name = "streamlit" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -873,6 +874,7 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.24.0,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "streamlit", specifier = ">=1.63.0" },
+    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2025.2" },
 ]
 
 [package.metadata.requires-dev]

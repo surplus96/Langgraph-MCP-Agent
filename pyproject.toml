@@ -13,6 +13,9 @@ dependencies = [
     "mcp[cli]>=1.24.0,<2.0.0",
     "python-dotenv>=1.2.3",
     "streamlit>=1.63.0",
+    # Windows ships no system timezone database, so zoneinfo needs this.
+    # examples/mcp_server_time.py depends on it.
+    "tzdata>=2025.2 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]
