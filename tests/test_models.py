@@ -7,6 +7,7 @@ import pytest
 from mcp_agent.models import (
     DEFAULT_MODEL,
     MODEL_REGISTRY,
+    RESTRICTED_MODELS,
     ModelSpec,
     available_models,
     build_model,
@@ -70,6 +71,19 @@ def test_registry_matches_values_verified_against_the_models_api():
         assert spec.max_tokens == max_tokens
         assert spec.context_window == context
         assert spec.supports_effort is effort
+
+
+def test_restricted_models_are_not_offered():
+    """A restricted model must not reach the selector or the builder."""
+    for model_id in RESTRICTED_MODELS:
+        assert model_id not in MODEL_REGISTRY
+        with pytest.raises(KeyError):
+            build_model(model_id)
+
+
+def test_every_restriction_states_a_reason():
+    for model_id, reason in RESTRICTED_MODELS.items():
+        assert reason.strip(), f"{model_id} is restricted with no stated reason"
 
 
 def test_unknown_model_raises():

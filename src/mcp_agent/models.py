@@ -68,6 +68,17 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
 
 DEFAULT_MODEL = "claude-opus-5"
 
+#: Models this account can reach but the app deliberately does not offer.
+#: Recorded so the exclusion reads as a decision rather than an oversight, and
+#: enforced by a test — adding one of these to MODEL_REGISTRY fails the suite
+#: until the entry here is removed along with it.
+RESTRICTED_MODELS: dict[str, str] = {
+    "claude-fable-5-1": (
+        "Highest-capability tier, priced well above Opus 5. Restricted by "
+        "project decision; enable only with an explicit cost sign-off."
+    ),
+}
+
 
 def available_models() -> list[str]:
     """Model ids whose provider credentials are actually present.
