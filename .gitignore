@@ -12,6 +12,15 @@ wheels/
 # Environment variables
 .env
 
+# Runtime MCP server configuration. Holds credentials for the servers it
+# launches; ship example_config.json instead.
+config.json
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # macOS
 .DS_Store
 
