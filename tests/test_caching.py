@@ -112,13 +112,31 @@ def test_hit_rate_of_a_warm_turn():
 
 
 def test_usage_adds_across_turns():
-    first = TokenUsage(input_tokens=100, output_tokens=10, cache_creation=80)
-    second = TokenUsage(input_tokens=120, output_tokens=12, cache_read=80)
+    """Every field must sum from both sides.
+
+    An earlier version of this test gave each cache field its only nonzero
+    value on one side, so "sum" and "take one side" were indistinguishable —
+    and dropping a term from __add__ left the suite green. This is the path
+    the sidebar's session total runs through on every turn.
+    """
+    first = TokenUsage(input_tokens=100, output_tokens=10, cache_read=30, cache_creation=80)
+    second = TokenUsage(input_tokens=120, output_tokens=12, cache_read=70, cache_creation=5)
     total = first + second
-    assert total.input_tokens == 220
-    assert total.output_tokens == 22
-    assert total.cache_read == 80
-    assert total.cache_creation == 80
+    assert total == TokenUsage(
+        input_tokens=220, output_tokens=22, cache_read=100, cache_creation=85
+    )
+
+
+def test_usage_accumulates_over_many_turns():
+    """Repeated accumulation, as a session actually does it."""
+    running = TokenUsage()
+    for _ in range(4):
+        running = running + TokenUsage(
+            input_tokens=100, output_tokens=10, cache_read=60, cache_creation=20
+        )
+    assert running == TokenUsage(
+        input_tokens=400, output_tokens=40, cache_read=240, cache_creation=80
+    )
 
 
 def test_uncached_input_never_goes_negative():
@@ -138,6 +156,75 @@ def test_from_metadata_reads_nested_details():
     )
     assert usage.input_tokens == 500
     assert usage.cache_read == 400
+
+
+def test_per_ttl_cache_writes_are_counted():
+    """langchain-anthropic zeroes the generic key and reports a TTL split.
+
+    Verified against the installed library: when Anthropic returns the
+    breakdown, `input_token_details["cache_creation"]` is set to 0 and the
+    counts move to the ephemeral_* keys. Reading only the generic key loses
+    the entire cache-write figure.
+    """
+    usage = TokenUsage.from_metadata(
+        {
+            "input_tokens": 1000,
+            "output_tokens": 5,
+            "total_tokens": 1005,
+            "input_token_details": {
+                "cache_read": 0,
+                "cache_creation": 0,
+                "ephemeral_5m_input_tokens": 600,
+                "ephemeral_1h_input_tokens": 300,
+            },
+        }
+    )
+    assert usage.cache_creation == 900
+    assert usage.uncached_input == 100
+
+
+def test_generic_cache_write_key_wins_when_present():
+    """The two sources must not be added together."""
+    usage = TokenUsage.from_metadata(
+        {
+            "input_tokens": 1000,
+            "input_token_details": {
+                "cache_creation": 500,
+                "ephemeral_5m_input_tokens": 500,
+            },
+        }
+    )
+    assert usage.cache_creation == 500
+
+
+def test_none_valued_detail_fields_are_treated_as_zero():
+    """A real shape: the library builds these with getattr(..., None)."""
+    usage = TokenUsage.from_metadata(
+        {
+            "input_tokens": 10,
+            "input_token_details": {"cache_read": None, "cache_creation": None},
+        }
+    )
+    assert usage == TokenUsage(input_tokens=10)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (1200, 1200),
+        ("1200", 1200),
+        (1200.7, 1200),
+        (None, 0),
+        (True, 0),  # bool is an int subclass but never a token count
+        ("abc", 0),
+        ({"nested": 1}, 0),
+    ],
+)
+def test_usage_fields_are_coerced_rather_than_raising(value, expected):
+    """Accounting must never be able to fail a turn."""
+    from mcp_agent.usage import _as_int
+
+    assert _as_int("input_tokens", value) == expected
 
 
 def test_from_metadata_tolerates_missing_pieces():
