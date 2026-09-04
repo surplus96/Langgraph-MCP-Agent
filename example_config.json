@@ -1,7 +1,7 @@
 {
-  "get_current_time": {
+  "time": {
     "command": "python",
-    "args": ["./mcp_server_time.py"],
+    "args": ["./examples/mcp_server_time.py"],
     "transport": "stdio"
   }
 }
