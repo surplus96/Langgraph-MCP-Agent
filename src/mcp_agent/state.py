@@ -12,6 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from mcp_agent.agent import TokenUsage
 from mcp_agent.models import DEFAULT_MODEL
 
 SESSION_KEY = "app_state"
@@ -35,6 +36,9 @@ class AppState:
     thread_id: str = field(default_factory=random_uuid)
     history: list[dict[str, Any]] = field(default_factory=list)
     pending_mcp_config: dict[str, Any] | None = None
+    #: Cumulative across the session. Cache hits only become visible from the
+    #: second turn onward, so a per-turn number alone cannot show them.
+    usage: TokenUsage = field(default_factory=TokenUsage)
 
     @classmethod
     def get(cls) -> AppState:
@@ -53,3 +57,4 @@ class AppState:
         """
         self.history.clear()
         self.thread_id = random_uuid()
+        self.usage = TokenUsage()

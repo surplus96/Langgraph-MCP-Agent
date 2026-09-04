@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from langchain_core.messages.ai import AIMessageChunk
 from langchain_core.messages.tool import ToolMessage
 
-from mcp_agent.agent import QueryResult, StreamAccumulator
+from mcp_agent.agent import QueryResult, StreamAccumulator, TokenUsage
 
 
 @dataclass
@@ -93,3 +93,68 @@ def test_non_message_content_is_ignored():
 
 def test_query_result_defaults_to_success():
     assert QueryResult(text="hi").error is None
+
+
+# --- Usage accumulation across a streamed turn --------------------------------
+
+
+def usage_chunk(**details):
+    """A chunk shaped like what langchain-anthropic emits during streaming."""
+    return AIMessageChunk(content="", usage_metadata=details)
+
+
+def test_usage_sums_across_chunks_of_one_call():
+    """Streamed chunks carry incremental usage; summing must give the total."""
+    acc = StreamAccumulator(FakeRenderer())
+    # message_start carries the input side, message_delta the output side.
+    acc(
+        {
+            "node": "model",
+            "content": usage_chunk(
+                input_tokens=1000,
+                output_tokens=1,
+                total_tokens=1001,
+                input_token_details={"cache_read": 0, "cache_creation": 900},
+            ),
+        }
+    )
+    acc(
+        {
+            "node": "model",
+            "content": usage_chunk(
+                input_tokens=0,
+                output_tokens=40,
+                total_tokens=40,
+                input_token_details={"cache_read": 0, "cache_creation": 0},
+            ),
+        }
+    )
+    assert acc.usage.input_tokens == 1000
+    assert acc.usage.output_tokens == 41
+    assert acc.usage.cache_creation == 900
+
+
+def test_usage_sums_across_react_iterations():
+    """A turn makes several model calls; all of them are billed, so all count."""
+    acc = StreamAccumulator(FakeRenderer())
+    for _ in range(3):
+        acc(
+            {
+                "node": "model",
+                "content": usage_chunk(
+                    input_tokens=1000,
+                    output_tokens=10,
+                    total_tokens=1010,
+                    input_token_details={"cache_read": 900, "cache_creation": 0},
+                ),
+            }
+        )
+    assert acc.usage.input_tokens == 3000
+    assert acc.usage.cache_read == 2700
+    assert acc.usage.cache_hit_rate == 0.9
+
+
+def test_chunks_without_usage_do_not_disturb_the_total():
+    acc = StreamAccumulator(FakeRenderer())
+    feed(acc, "plain text with no usage attached")
+    assert acc.usage == TokenUsage()

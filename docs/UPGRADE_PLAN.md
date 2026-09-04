@@ -143,6 +143,9 @@ registry model.
 
 ## Phase 4 — Pipeline optimization
 
+**Status: items 1-2 landed 2026-09-04.** Caching middleware and token accounting
+are in; the hit rate is surfaced in the sidebar. Items 3-9 remain.
+
 Ordered by value. Requires Phase 1; step 4.2 should follow Phase 3.6.
 
 1. **Prompt caching — the largest cost lever.** The system prompt *and* the full MCP tool

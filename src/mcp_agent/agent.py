@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from langchain_core.messages import HumanMessage
-from langchain_core.messages.ai import AIMessageChunk
+from langchain_core.messages.ai import AIMessageChunk, UsageMetadata, add_usage
 from langchain_core.messages.tool import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
@@ -68,6 +68,57 @@ Guidelines:
 """
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """Token counts for one turn or one session.
+
+    ``input_tokens`` is the true total including cached tokens: Anthropic
+    reports cached tokens separately, and langchain-anthropic folds them back
+    in. So ``cache_read / input_tokens`` is the share served from cache.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read: int = 0
+    cache_creation: int = 0
+
+    @classmethod
+    def from_metadata(cls, metadata: UsageMetadata | None) -> TokenUsage:
+        if not metadata:
+            return cls()
+        details = metadata.get("input_token_details") or {}
+        return cls(
+            input_tokens=metadata.get("input_tokens") or 0,
+            output_tokens=metadata.get("output_tokens") or 0,
+            cache_read=details.get("cache_read") or 0,
+            cache_creation=details.get("cache_creation") or 0,
+        )
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read=self.cache_read + other.cache_read,
+            cache_creation=self.cache_creation + other.cache_creation,
+        )
+
+    @property
+    def uncached_input(self) -> int:
+        """Input tokens billed at full rate."""
+        return max(self.input_tokens - self.cache_read - self.cache_creation, 0)
+
+    @property
+    def cache_hit_rate(self) -> float:
+        """Share of input tokens served from cache, 0.0-1.0.
+
+        Zero across repeated turns means the cached prefix is not stable —
+        something before the last breakpoint is varying between requests.
+        """
+        if not self.input_tokens:
+            return 0.0
+        return self.cache_read / self.input_tokens
+
+
 class ChunkRenderer(Protocol):
     """UI hook invoked as streamed content accumulates."""
 
@@ -90,6 +141,7 @@ class QueryResult:
     text: str = ""
     tool_log: str = ""
     error: str | None = None
+    usage: TokenUsage = field(default_factory=TokenUsage)
 
 
 @dataclass
@@ -104,6 +156,10 @@ class StreamAccumulator:
     renderer: ChunkRenderer
     text_parts: list[str] = field(default_factory=list)
     tool_parts: list[str] = field(default_factory=list)
+    #: Merged with the library's own helper. Streamed chunks carry incremental
+    #: usage by design, so summing them yields the total for the turn — across
+    #: every model call the ReAct loop makes, not just the last one.
+    raw_usage: UsageMetadata | None = None
 
     @property
     def text(self) -> str:
@@ -112,6 +168,16 @@ class StreamAccumulator:
     @property
     def tool_log(self) -> str:
         return "".join(self.tool_parts)
+
+    @property
+    def usage(self) -> TokenUsage:
+        return TokenUsage.from_metadata(self.raw_usage)
+
+    def _record_usage(self, chunk: AIMessageChunk) -> None:
+        metadata = getattr(chunk, "usage_metadata", None)
+        if not metadata:
+            return
+        self.raw_usage = metadata if self.raw_usage is None else add_usage(self.raw_usage, metadata)
 
     def _add_tool(self, payload: Any) -> None:
         try:
@@ -131,6 +197,7 @@ class StreamAccumulator:
         if not isinstance(content, AIMessageChunk):
             return
 
+        self._record_usage(content)
         body = content.content
 
         if isinstance(body, str):
@@ -174,6 +241,7 @@ async def build_agent(
         The compiled agent and the number of tools discovered.
     """
     from langchain.agents import create_agent
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
     client = MultiServerMCPClient(mcp_config)
@@ -188,6 +256,11 @@ async def build_agent(
         tools,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
+        # Tags the system prompt's last block and the last tool definition with
+        # cache_control. Both are fixed for the session, and in a ReAct loop
+        # they were previously re-sent at full price on every iteration — up to
+        # `recursion_limit` times per user turn, not once.
+        middleware=[AnthropicPromptCachingMiddleware()],
     )
     return agent, len(tools)
 
@@ -227,6 +300,11 @@ async def run_query(
             text=accumulator.text,
             tool_log=accumulator.tool_log,
             error=f"Error during query processing: {exc}",
+            usage=accumulator.usage,
         )
 
-    return QueryResult(text=accumulator.text, tool_log=accumulator.tool_log)
+    return QueryResult(
+        text=accumulator.text,
+        tool_log=accumulator.tool_log,
+        usage=accumulator.usage,
+    )

@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from mcp_agent import auth  # noqa: E402
-from mcp_agent.agent import QueryResult, build_agent, run_query  # noqa: E402
+from mcp_agent.agent import QueryResult, TokenUsage, build_agent, run_query  # noqa: E402
 from mcp_agent.config import (  # noqa: E402
     ConfigError,
     allowed_commands,
@@ -131,6 +131,41 @@ class StreamlitRenderer:
             # st.code, not st.markdown: tool output is untrusted and a literal
             # fence inside it would otherwise escape into live markdown.
             st.code(tool_log, language="json")
+
+
+def render_usage(usage: TokenUsage) -> None:
+    """Show cumulative token spend and how much of it came from cache.
+
+    The cache hit rate is the whole point of the prompt-caching middleware:
+    if it stays at 0% past the first turn, the cached prefix is not stable and
+    the middleware is buying nothing.
+    """
+    st.divider()
+    st.subheader("🧮 Token Usage")
+
+    if not usage.input_tokens and not usage.output_tokens:
+        st.caption("No requests yet this session.")
+        return
+
+    col1, col2 = st.columns(2)
+    col1.metric("Input", f"{usage.input_tokens:,}")
+    col2.metric("Output", f"{usage.output_tokens:,}")
+
+    st.metric(
+        "Cache hit rate",
+        f"{usage.cache_hit_rate:.0%}",
+        help=(
+            "Share of input tokens served from cache, billed at roughly a tenth "
+            "of the normal rate. Expect 0% on the first turn — there is nothing "
+            "cached yet — and a high rate from the second turn on. If it stays "
+            "at 0%, something in the prompt prefix is changing between requests."
+        ),
+    )
+    st.caption(
+        f"cache read {usage.cache_read:,} · "
+        f"cache write {usage.cache_creation:,} · "
+        f"full price {usage.uncached_input:,}"
+    )
 
 
 def render_history() -> None:
@@ -294,6 +329,8 @@ with st.sidebar:
     st.write(f"📐 Max Output Tokens: {spec.max_tokens:,}")
     st.write(f"📥 Context Window: {spec.context_window:,}")
 
+    render_usage(state.usage)
+
     if st.button("Apply Settings", type="primary", use_container_width=True):
         try:
             save_config(state.pending_mcp_config)
@@ -356,6 +393,7 @@ if user_query:
                 logger.warning("Query exceeded %ss", state.timeout_seconds)
                 result = QueryResult(error=f"⏱️ Request exceeded {state.timeout_seconds} seconds.")
 
+        state.usage = state.usage + result.usage
         state.history.append({"role": "user", "content": user_query})
         if result.error:
             st.error(result.error)
