@@ -33,3 +33,30 @@ A markdown report, findings ordered by severity (CRITICAL / HIGH / MEDIUM / LOW)
 Each finding: `file:line`, one-sentence defect, concrete failure or maintenance cost,
 and a specific proposed fix. Cite real line numbers — never invent them.
 End with a "Refactor sequence" section: ordered steps, each independently shippable.
+
+## Reporting discipline
+
+These rules apply to every finding you report, and exist because reviews on this
+repository have already failed in each of these ways.
+
+- **Name the code path you verified.** A defect that only manifests on a path the
+  application never takes is latent, not live. If you have not established which
+  path runs in production, say so and mark the severity as conditional. Two
+  reviewers once reported the same defect at HIGH and MEDIUM because one checked
+  the streaming path and the other did not; the difference was real and only one
+  of them had looked.
+- **Severity is what happens, not what could.** Reserve the top severity for
+  something a user hits on a path you traced. "Would be serious if reached" is
+  a lower severity plus a sentence about what would reach it.
+- **Distinguish what you ran from what you read.** Claims backed by output you
+  saw carry weight; claims read off the source are inference. Label the second
+  kind, and mark anything you could not check as UNVERIFIED rather than
+  omitting it.
+- **Say what you checked and found sound.** A reviewer who reports only problems
+  gives no signal about coverage, and the next person re-checks the same ground.
+- **Defer rather than duplicate.** When a finding sits in another reviewer's
+  lane, state it in one line and name the owner instead of investigating it in
+  full. Parallel reviewers repeating each other's work is the main waste in this
+  setup.
+
+**Defer:** Tests that pass without constraining the code belong to `test-engineer`; user-facing strings belong to `interface-reviewer`.
