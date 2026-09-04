@@ -12,8 +12,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from mcp_agent.agent import TokenUsage
 from mcp_agent.models import DEFAULT_MODEL
+from mcp_agent.usage import TokenUsage
 
 SESSION_KEY = "app_state"
 
@@ -30,6 +30,8 @@ class AppState:
     session_initialized: bool = False
     agent: Any = None
     tool_count: int = 0
+    #: From the last successful build; 0 before any.
+    prefix_tokens: int = 0
     timeout_seconds: int = 120
     recursion_limit: int = 25
     selected_model: str = DEFAULT_MODEL

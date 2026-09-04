@@ -109,3 +109,38 @@ def test_corrupt_config_surfaces_an_error_without_crashing(monkeypatch, tmp_path
     app = run_app(monkeypatch)
     assert not app.exception
     assert any("not valid JSON" in error.value for error in app.error)
+
+
+def test_usage_panel_renders_real_numbers(monkeypatch):
+    """The metric branch was previously unreachable in tests."""
+    from mcp_agent.state import SESSION_KEY, AppState
+    from mcp_agent.usage import TokenUsage
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.session_state[SESSION_KEY] = AppState(
+        prefix_tokens=5000,  # above every model's floor, so no warning
+        usage=TokenUsage(input_tokens=1000, output_tokens=50, cache_read=900),
+    )
+    app.run()
+
+    assert not app.exception
+    labels = {m.label: m.value for m in app.sidebar.metric}
+    assert labels["Cache hit rate"] == "90.0%"
+    assert labels["Input (billed)"] == "100"
+
+
+def test_short_prefix_is_reported_as_the_reason_caching_is_off(monkeypatch):
+    """A prefix under the model floor must not be blamed on prefix instability."""
+    from mcp_agent.state import SESSION_KEY, AppState
+    from mcp_agent.usage import TokenUsage
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.session_state[SESSION_KEY] = AppState(
+        selected_model="claude-haiku-4-5-20251001",
+        prefix_tokens=487,
+        usage=TokenUsage(input_tokens=1000, output_tokens=50),
+    )
+    app.run()
+
+    assert not app.exception
+    assert any("Caching is inactive" in w.value for w in app.warning)

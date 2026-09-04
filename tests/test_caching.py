@@ -36,6 +36,7 @@ def build_request():
     from langchain_anthropic import ChatAnthropic
 
     os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-real")
+
     return ModelRequest(
         model=ChatAnthropic(model="claude-opus-5", max_tokens=1024),  # type: ignore[call-arg]
         messages=[HumanMessage(content="hi")],
@@ -49,20 +50,29 @@ def build_request():
     )
 
 
-def capture(request):
-    """Stand in for the model call, recording what the middleware produced."""
-    capture.request = request
-    return None
-
-
 def apply_middleware():
-    middleware = AnthropicPromptCachingMiddleware()
-    middleware.wrap_model_call(build_request(), capture)
-    return capture.request
+    """Run the middleware and return the request it produced.
+
+    A fresh closure per call: a module-level spy would let a later test read a
+    request captured by an earlier one and pass without the middleware running.
+    """
+    box: dict = {}
+
+    def capture(request):
+        box["request"] = request
+        return None
+
+    AnthropicPromptCachingMiddleware().wrap_model_call(build_request(), capture)
+    assert "request" in box, "middleware did not invoke the handler"
+    return box["request"]
 
 
 def test_cache_control_reaches_model_settings():
-    """The middleware sets a ttl alongside the type; 5m is its default."""
+    """This is a top-level breakpoint that follows the growing message tail.
+
+    It is the third breakpoint, beyond the system prompt and the tool block,
+    and the one that makes multi-step ReAct turns cheap.
+    """
     assert apply_middleware().model_settings.get("cache_control") == {
         "type": "ephemeral",
         "ttl": "5m",
@@ -138,3 +148,79 @@ def test_from_metadata_tolerates_missing_pieces():
 @pytest.mark.parametrize("hit_rate,expected", [(0, 0.0), (500, 0.5), (1000, 1.0)])
 def test_hit_rate_scales(hit_rate: int, expected: float):
     assert TokenUsage(input_tokens=1000, cache_read=hit_rate).cache_hit_rate == expected
+
+
+# --- The wiring, not the library ----------------------------------------------
+#
+# The three tests above characterise langchain-anthropic. They pass whether or
+# not this repository uses it: deleting the middleware from build_agent leaves
+# them green. These pin our own call.
+
+
+def test_build_agent_attaches_the_caching_middleware(monkeypatch):
+    """Removing the middleware from build_agent must fail the suite."""
+    import asyncio
+
+    from mcp_agent import agent as agent_module
+
+    captured: dict = {}
+
+    def fake_create_agent(model, tools, **kwargs):
+        captured.update(kwargs)
+        return "compiled-agent"
+
+    class FakeClient:
+        def __init__(self, config):
+            pass
+
+        async def get_tools(self):
+            return [beta, alpha]  # deliberately unsorted
+
+    monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
+    monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+    bundle = asyncio.run(agent_module.build_agent("claude-opus-5", {}, None))
+
+    middleware = captured.get("middleware") or []
+    assert any(isinstance(m, AnthropicPromptCachingMiddleware) for m in middleware), (
+        "build_agent no longer attaches the prompt caching middleware"
+    )
+    assert bundle.tool_count == 2
+    assert bundle.estimated_prefix_tokens > 0
+
+
+def test_build_agent_sorts_tools_for_a_stable_cache_prefix(monkeypatch):
+    """Tool order is part of the cached prefix; an unstable order misses."""
+    import asyncio
+
+    from mcp_agent import agent as agent_module
+
+    captured: dict = {}
+
+    def fake_create_agent(model, tools, **kwargs):
+        captured["tools"] = tools
+        return "compiled-agent"
+
+    class FakeClient:
+        def __init__(self, config):
+            pass
+
+        async def get_tools(self):
+            return [beta, alpha]
+
+    monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
+    monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+    asyncio.run(agent_module.build_agent("claude-opus-5", {}, None))
+    assert [t.name for t in captured["tools"]] == ["alpha", "beta"]
+
+
+def test_ttl_falls_back_on_a_bad_value(monkeypatch):
+    from mcp_agent.agent import _prompt_cache_ttl
+
+    monkeypatch.setenv("PROMPT_CACHE_TTL", "30m")
+    assert _prompt_cache_ttl() == "1h"
+    monkeypatch.setenv("PROMPT_CACHE_TTL", "5m")
+    assert _prompt_cache_ttl() == "5m"

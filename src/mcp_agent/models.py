@@ -29,6 +29,10 @@ class ModelSpec:
     #: Maximum input tokens (context window). Also from the Models API.
     context_window: int
     env_key: str
+    #: Shortest prefix Anthropic will cache for this model. Below it,
+    #: ``cache_control`` is ignored silently — no error, no warning, just no
+    #: caching. This is why a small tool set can make caching a no-op.
+    min_cacheable_tokens: int
     #: Whether the model accepts ``output_config.effort``. Haiku 4.5 does not —
     #: it still uses the older ``thinking={"type": "enabled", ...}`` form. This
     #: matters when effort control is added; do not send effort where it is
@@ -43,6 +47,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     "claude-opus-5": ModelSpec(
         model_id="claude-opus-5",
         provider="anthropic",
+        min_cacheable_tokens=512,
         max_tokens=128_000,
         context_window=1_000_000,
         env_key="ANTHROPIC_API_KEY",
@@ -51,6 +56,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     "claude-sonnet-5": ModelSpec(
         model_id="claude-sonnet-5",
         provider="anthropic",
+        min_cacheable_tokens=1_024,
         max_tokens=128_000,
         context_window=1_000_000,
         env_key="ANTHROPIC_API_KEY",
@@ -59,6 +65,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     "claude-haiku-4-5-20251001": ModelSpec(
         model_id="claude-haiku-4-5-20251001",
         provider="anthropic",
+        min_cacheable_tokens=4_096,
         max_tokens=64_000,
         context_window=200_000,
         env_key="ANTHROPIC_API_KEY",

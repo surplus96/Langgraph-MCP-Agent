@@ -34,3 +34,12 @@ def test_reset_clears_history_and_rotates_thread():
 
     assert state.history == []
     assert state.thread_id != original_thread
+
+
+def test_reset_clears_accumulated_usage():
+    """Usage is per-conversation; a reset must not carry the old totals over."""
+    from mcp_agent.usage import TokenUsage
+
+    state = AppState(usage=TokenUsage(input_tokens=500, cache_read=400))
+    state.reset_conversation()
+    assert state.usage == TokenUsage()

@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from mcp_agent import auth  # noqa: E402
-from mcp_agent.agent import QueryResult, TokenUsage, build_agent, run_query  # noqa: E402
+from mcp_agent.agent import QueryResult, build_agent, run_query  # noqa: E402
 from mcp_agent.config import (  # noqa: E402
     ConfigError,
     allowed_commands,
@@ -36,6 +36,7 @@ from mcp_agent.models import (  # noqa: E402
 )
 from mcp_agent.runtime import run_sync  # noqa: E402
 from mcp_agent.state import AppState  # noqa: E402
+from mcp_agent.usage import TokenUsage  # noqa: E402
 
 # `override=False` so a real environment variable (from Compose, Kubernetes or a
 # secret manager) wins over a file that happens to be mounted into the image.
@@ -134,38 +135,48 @@ class StreamlitRenderer:
 
 
 def render_usage(usage: TokenUsage) -> None:
-    """Show cumulative token spend and how much of it came from cache.
+    """Show token spend, how much came from cache, and why if none did.
 
-    The cache hit rate is the whole point of the prompt-caching middleware:
-    if it stays at 0% past the first turn, the cached prefix is not stable and
-    the middleware is buying nothing.
+    A 0% hit rate has four plausible causes, and blaming only prefix instability
+    sends people to debug a problem they may not have. The most common cause for
+    this app is the least obvious: a prefix shorter than the model's minimum
+    cacheable length is ignored silently, with no error anywhere.
     """
+    spec = MODEL_REGISTRY[state.selected_model]
     st.divider()
     st.subheader("🧮 Token Usage")
+
+    prefix_too_short = state.prefix_tokens and state.prefix_tokens < spec.min_cacheable_tokens
+    if prefix_too_short:
+        st.warning(
+            f"Caching is inactive: the prompt prefix is roughly "
+            f"{state.prefix_tokens:,} tokens, under this model's "
+            f"{spec.min_cacheable_tokens:,}-token minimum. Anthropic ignores "
+            "cache_control below that, without an error. Add more MCP tools, or "
+            "pick a model with a lower floor."
+        )
 
     if not usage.input_tokens and not usage.output_tokens:
         st.caption("No requests yet this session.")
         return
 
     col1, col2 = st.columns(2)
-    col1.metric("Input", f"{usage.input_tokens:,}")
+    col1.metric("Input (billed)", f"{usage.uncached_input:,}")
     col2.metric("Output", f"{usage.output_tokens:,}")
 
-    st.metric(
-        "Cache hit rate",
-        f"{usage.cache_hit_rate:.0%}",
-        help=(
-            "Share of input tokens served from cache, billed at roughly a tenth "
-            "of the normal rate. Expect 0% on the first turn — there is nothing "
-            "cached yet — and a high rate from the second turn on. If it stays "
-            "at 0%, something in the prompt prefix is changing between requests."
-        ),
-    )
+    st.metric("Cache hit rate", f"{usage.cache_hit_rate:.1%}")
     st.caption(
         f"cache read {usage.cache_read:,} · "
         f"cache write {usage.cache_creation:,} · "
-        f"full price {usage.uncached_input:,}"
+        f"total input {usage.input_tokens:,}"
     )
+
+    if usage.cache_hit_rate == 0 and not prefix_too_short:
+        st.caption(
+            "0% is expected on the first turn — nothing is cached yet. If it "
+            "persists, the prefix is changing between turns (a tool set edit "
+            "does that) or the cache expired between turns."
+        )
 
 
 def render_history() -> None:
@@ -187,7 +198,7 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
     """Connect to MCP servers and build the agent. Returns success."""
     try:
         with st.spinner("🔄 Connecting to MCP server..."):
-            agent, tool_count = run_sync(
+            bundle = run_sync(
                 build_agent(state.selected_model, mcp_config, get_checkpointer()),
                 timeout=state.timeout_seconds,
             )
@@ -200,8 +211,9 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
         st.error(f"❌ Could not initialize the agent: {exc}")
         return False
 
-    state.agent = agent
-    state.tool_count = tool_count
+    state.agent = bundle.agent
+    state.tool_count = bundle.tool_count
+    state.prefix_tokens = bundle.estimated_prefix_tokens
     state.session_initialized = True
     return True
 

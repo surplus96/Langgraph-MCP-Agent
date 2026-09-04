@@ -158,3 +158,48 @@ def test_chunks_without_usage_do_not_disturb_the_total():
     acc = StreamAccumulator(FakeRenderer())
     feed(acc, "plain text with no usage attached")
     assert acc.usage == TokenUsage()
+
+
+async def test_timeout_keeps_the_text_and_tokens_already_paid_for():
+    """A cut-short turn must not discard what it already streamed and billed."""
+    import asyncio
+
+    from mcp_agent import agent as agent_module
+
+    renderer = FakeRenderer()
+
+    async def slow_stream(graph, inputs, callback, config=None, node_names=None):
+        callback(
+            {
+                "node": "model",
+                "content": AIMessageChunk(
+                    content=[{"type": "text", "text": "partial answer"}],
+                    usage_metadata={
+                        "input_tokens": 900,
+                        "output_tokens": 5,
+                        "total_tokens": 905,
+                        "input_token_details": {"cache_read": 800, "cache_creation": 0},
+                    },
+                ),
+            }
+        )
+        await asyncio.sleep(10)
+
+    original = agent_module.astream_graph
+    agent_module.astream_graph = slow_stream
+    try:
+        result = await agent_module.run_query(
+            agent="unused",
+            query="hello",
+            renderer=renderer,
+            thread_id="t1",
+            recursion_limit=10,
+            timeout_seconds=0.05,
+        )
+    finally:
+        agent_module.astream_graph = original
+
+    assert result.error is not None
+    assert result.text == "partial answer"
+    assert result.usage.input_tokens == 900
+    assert result.usage.cache_read == 800

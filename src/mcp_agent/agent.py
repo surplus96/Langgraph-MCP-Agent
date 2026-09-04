@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.ai import AIMessageChunk, UsageMetadata, add_usage
@@ -15,8 +17,29 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from mcp_agent.models import build_model
 from mcp_agent.streaming import astream_graph
+from mcp_agent.usage import TokenUsage
 
 logger = logging.getLogger(__name__)
+
+
+#: Cache lifetime for the prompt prefix. A human chat UI routinely leaves more
+#: than five minutes between turns, and an expired prefix must be rewritten at
+#: 1.25x rather than read at 0.1x — so the longer window wins for this shape of
+#: app, at the cost of 2.0x on the writes themselves.
+def _prompt_cache_ttl() -> Literal["5m", "1h"]:
+    """Read the configured TTL, falling back rather than failing on a typo."""
+    value = os.environ.get("PROMPT_CACHE_TTL", "1h").strip()
+    if value in ("5m", "1h"):
+        return value  # type: ignore[return-value]
+    logger.warning("PROMPT_CACHE_TTL=%r is not '5m' or '1h'; using 1h", value)
+    return "1h"
+
+
+#: Rough characters-per-token, used only to warn when the cached prefix looks
+#: too short for the selected model. Deliberately conservative: an exact count
+#: needs the count_tokens endpoint, and a warning is cheaper than a silent
+#: no-op.
+_CHARS_PER_TOKEN = 4
 
 SYSTEM_PROMPT = """<ROLE>
 You are a smart agent with an ability to use tools.
@@ -68,57 +91,6 @@ Guidelines:
 """
 
 
-@dataclass(frozen=True)
-class TokenUsage:
-    """Token counts for one turn or one session.
-
-    ``input_tokens`` is the true total including cached tokens: Anthropic
-    reports cached tokens separately, and langchain-anthropic folds them back
-    in. So ``cache_read / input_tokens`` is the share served from cache.
-    """
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read: int = 0
-    cache_creation: int = 0
-
-    @classmethod
-    def from_metadata(cls, metadata: UsageMetadata | None) -> TokenUsage:
-        if not metadata:
-            return cls()
-        details = metadata.get("input_token_details") or {}
-        return cls(
-            input_tokens=metadata.get("input_tokens") or 0,
-            output_tokens=metadata.get("output_tokens") or 0,
-            cache_read=details.get("cache_read") or 0,
-            cache_creation=details.get("cache_creation") or 0,
-        )
-
-    def __add__(self, other: TokenUsage) -> TokenUsage:
-        return TokenUsage(
-            input_tokens=self.input_tokens + other.input_tokens,
-            output_tokens=self.output_tokens + other.output_tokens,
-            cache_read=self.cache_read + other.cache_read,
-            cache_creation=self.cache_creation + other.cache_creation,
-        )
-
-    @property
-    def uncached_input(self) -> int:
-        """Input tokens billed at full rate."""
-        return max(self.input_tokens - self.cache_read - self.cache_creation, 0)
-
-    @property
-    def cache_hit_rate(self) -> float:
-        """Share of input tokens served from cache, 0.0-1.0.
-
-        Zero across repeated turns means the cached prefix is not stable —
-        something before the last breakpoint is varying between requests.
-        """
-        if not self.input_tokens:
-            return 0.0
-        return self.cache_read / self.input_tokens
-
-
 class ChunkRenderer(Protocol):
     """UI hook invoked as streamed content accumulates."""
 
@@ -156,9 +128,10 @@ class StreamAccumulator:
     renderer: ChunkRenderer
     text_parts: list[str] = field(default_factory=list)
     tool_parts: list[str] = field(default_factory=list)
-    #: Merged with the library's own helper. Streamed chunks carry incremental
-    #: usage by design, so summing them yields the total for the turn — across
-    #: every model call the ReAct loop makes, not just the last one.
+    #: Merged with the library's own helper. langchain-anthropic emits usage on
+    #: `message_delta` only, and that record is cumulative for the call — so
+    #: there is exactly one usage-bearing chunk per model call, and summing adds
+    #: up the several calls a ReAct turn makes rather than double counting one.
     raw_usage: UsageMetadata | None = None
 
     @property
@@ -230,16 +203,24 @@ class StreamAccumulator:
             self._add_tool(chunk)
 
 
+@dataclass
+class AgentBundle:
+    """A built agent plus what the UI needs to describe it honestly."""
+
+    agent: Any
+    tool_count: int
+    #: Approximate size of the cacheable prefix (system prompt + tool schemas).
+    #: Compared against the model's floor to tell a real cache miss apart from
+    #: a prefix that was never eligible for caching.
+    estimated_prefix_tokens: int
+
+
 async def build_agent(
     model_id: str,
     mcp_config: dict[str, Any],
     checkpointer: InMemorySaver,
-) -> tuple[Any, int]:
-    """Connect to the configured MCP servers and build the ReAct agent.
-
-    Returns:
-        The compiled agent and the number of tools discovered.
-    """
+) -> AgentBundle:
+    """Connect to the configured MCP servers and build the ReAct agent."""
     from langchain.agents import create_agent
     from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -256,13 +237,22 @@ async def build_agent(
         tools,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
-        # Tags the system prompt's last block and the last tool definition with
-        # cache_control. Both are fixed for the session, and in a ReAct loop
-        # they were previously re-sent at full price on every iteration — up to
-        # `recursion_limit` times per user turn, not once.
-        middleware=[AnthropicPromptCachingMiddleware()],
+        # Sets three cache breakpoints: the system prompt's last block, the
+        # last tool definition (one trailing breakpoint covers the whole
+        # contiguous tool block), and a top-level one that follows the growing
+        # message tail. All were previously re-sent at full price on every ReAct
+        # iteration — up to `recursion_limit` times per user turn, not once.
+        middleware=[AnthropicPromptCachingMiddleware(ttl=_prompt_cache_ttl())],
     )
-    return agent, len(tools)
+
+    prefix_chars = len(SYSTEM_PROMPT) + sum(
+        len(json.dumps({"name": t.name, "description": t.description}, default=str)) for t in tools
+    )
+    return AgentBundle(
+        agent=agent,
+        tool_count=len(tools),
+        estimated_prefix_tokens=prefix_chars // _CHARS_PER_TOKEN,
+    )
 
 
 async def run_query(
@@ -272,27 +262,36 @@ async def run_query(
     *,
     thread_id: str,
     recursion_limit: int,
+    timeout_seconds: float | None = None,
 ) -> QueryResult:
     """Run one turn against ``agent``, streaming into ``renderer``.
 
-    Any partial text produced before a failure is preserved on the result rather
-    than discarded, so a timeout does not throw away tokens already paid for.
-    Cancellation is deliberately not caught here: the caller applies the timeout
-    and reads the accumulator.
+    The timeout is applied here rather than by the caller, so that a turn cut
+    short still reports the text it streamed and the tokens it already spent.
+    Cancelling from outside would strand both in this frame.
     """
     accumulator = StreamAccumulator(renderer)
 
     try:
-        await astream_graph(
-            agent,
-            {"messages": [HumanMessage(content=query)]},
-            callback=accumulator,
-            config=RunnableConfig(
-                recursion_limit=recursion_limit,
-                # thread_id belongs under `configurable`; passing it at the top
-                # level only worked via an ensure_config fallback.
-                configurable={"thread_id": thread_id},
-            ),
+        async with asyncio.timeout(timeout_seconds):
+            await astream_graph(
+                agent,
+                {"messages": [HumanMessage(content=query)]},
+                callback=accumulator,
+                config=RunnableConfig(
+                    recursion_limit=recursion_limit,
+                    # thread_id belongs under `configurable`; passing it at the
+                    # top level only worked via an ensure_config fallback.
+                    configurable={"thread_id": thread_id},
+                ),
+            )
+    except TimeoutError:
+        logger.warning("Turn exceeded %ss; keeping partial output", timeout_seconds)
+        return QueryResult(
+            text=accumulator.text,
+            tool_log=accumulator.tool_log,
+            error=f"Request exceeded {timeout_seconds:.0f} seconds.",
+            usage=accumulator.usage,
         )
     except Exception as exc:
         logger.exception("Agent run failed")
