@@ -19,14 +19,14 @@ def test_login_enabled_is_case_insensitive(monkeypatch):
 
 def test_correct_credentials_verify(monkeypatch):
     monkeypatch.setenv("USER_ID", "alice")
-    monkeypatch.setenv("USER_PASSWORD", "correct horse battery staple")
-    assert auth.verify("alice", "correct horse battery staple") is True
+    monkeypatch.setenv("USER_PASSWORD", "fake-password-for-tests")
+    assert auth.verify("alice", "fake-password-for-tests") is True
 
 
 def test_wrong_password_is_rejected(monkeypatch):
     monkeypatch.setenv("USER_ID", "alice")
-    monkeypatch.setenv("USER_PASSWORD", "s3cret")
-    assert auth.verify("alice", "wrong") is False
+    monkeypatch.setenv("USER_PASSWORD", "fake-password-for-tests")
+    assert auth.verify("alice", "some-other-value") is False
 
 
 def test_empty_submission_is_rejected_even_when_expected_is_empty(monkeypatch):

@@ -67,22 +67,28 @@ def test_tool_editor_appears_when_explicitly_enabled(monkeypatch):
 
 
 def test_login_gate_blocks_when_enabled(monkeypatch):
-    app = run_app(monkeypatch, USE_LOGIN="true", USER_ID="alice", USER_PASSWORD="s3cret")
+    app = run_app(
+        monkeypatch, USE_LOGIN="true", USER_ID="alice", USER_PASSWORD="fake-password-for-tests"
+    )
     assert not app.exception
     assert any("Login" in heading.value for heading in app.title)
     assert not app.chat_input
 
 
 def test_blank_login_is_refused(monkeypatch):
-    app = run_app(monkeypatch, USE_LOGIN="true", USER_ID="alice", USER_PASSWORD="s3cret")
+    app = run_app(
+        monkeypatch, USE_LOGIN="true", USER_ID="alice", USER_PASSWORD="fake-password-for-tests"
+    )
     app.button[0].click().run()
     assert any("incorrect" in error.value for error in app.error)
 
 
 def test_correct_login_reveals_the_app(monkeypatch):
-    app = run_app(monkeypatch, USE_LOGIN="true", USER_ID="alice", USER_PASSWORD="s3cret")
+    app = run_app(
+        monkeypatch, USE_LOGIN="true", USER_ID="alice", USER_PASSWORD="fake-password-for-tests"
+    )
     app.text_input[0].set_value("alice")
-    app.text_input[1].set_value("s3cret")
+    app.text_input[1].set_value("fake-password-for-tests")
     app.button[0].click().run()
     assert not app.exception
     assert app.chat_input
