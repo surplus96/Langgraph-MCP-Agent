@@ -40,8 +40,13 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Audit dependencies for known vulnerabilities
         run: |
-          uv export --frozen --no-dev --format requirements-txt > requirements.audit.txt
-          uvx pip-audit --requirement requirements.audit.txt
+          # --no-emit-project: the export otherwise starts with `-e .`, which
+          # pip-audit cannot install under its hash requirement.
+          # --python 3.12: the lock resolves packages that require >=3.12, so
+          # the audit venv must not fall back to the runner's default.
+          uv export --frozen --no-dev --no-emit-project \
+            --format requirements-txt > requirements.audit.txt
+          uvx --python 3.12 pip-audit --requirement requirements.audit.txt
 
   docker:
     runs-on: ubuntu-latest
