@@ -61,10 +61,11 @@ Goal: a working app on current models. Smallest change set that clears the three
    | `claude-3-7-sonnet-latest` | `claude-opus-5` | 128K | thinking on by default; no `temperature` |
    | `claude-3-5-sonnet-latest` | `claude-sonnet-5` | 128K | new tokenizer — re-baseline token budgets |
    | `claude-3-5-haiku-latest` | `claude-haiku-4-5` | 64K | still accepts `temperature`; old thinking config |
-   | `gpt-4o` / `gpt-4o-mini` | see decision D2 | — | IDs UNVERIFIED — confirm against `GET /v1/models` |
+   | `gpt-4o` / `gpt-4o-mini` | dropped — Anthropic only | — | Re-add once IDs are confirmed |
 
-5. **Remove `temperature`.** Gate per-model via the registry if Haiku is retained.
-   Raise `max_tokens` to the real ceilings (currently 6–16× too low).
+5. **Remove `temperature`.** Raise `max_tokens` to the real ceilings (previously
+   6–16× too low). VERIFIED 2026-09-04 against `GET /v1/models`: all three
+   registry ids exist and every `max_tokens` matches the API exactly.
 6. **Delete `cleanup_mcp_client`** (`app.py:216-231`). In 0.3.2 `__aexit__` raises
    `NotImplementedError` unconditionally; the bare `except` swallows it, so line 226
    (`= None`) is never reached. Replace with an explicit assignment.
@@ -204,6 +205,7 @@ Ordered by value. Requires Phase 1; step 4.2 should follow Phase 3.6.
   environment's egress proxy. `gpt-5.6-sol`/`-terra`/`-luna` are corroborated by an AWS
   Bedrock announcement and several trackers, but not by first-party docs. Whether bare
   `gpt-4o` still resolves on the API is also unconfirmed.
-- **`claude-haiku-4-5` vs `claude-haiku-4-5-20251001`** — confirm which form to pin.
+- ~~**`claude-haiku-4-5` vs `claude-haiku-4-5-20251001`**~~ — RESOLVED 2026-09-04.
+  Only the dated form exists; the bare alias is not in the Models API listing.
 - **Git history purge** for the leaked key requires a force-push and does not help existing
   forks. Rotation (0.1) is what actually mitigates.

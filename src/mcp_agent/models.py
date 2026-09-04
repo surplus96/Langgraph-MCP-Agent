@@ -24,35 +24,45 @@ class ModelSpec:
 
     model_id: str
     provider: Provider
+    #: Maximum output tokens. Verified against the Models API, not guessed.
     max_tokens: int
+    #: Maximum input tokens (context window). Also from the Models API.
+    context_window: int
     env_key: str
-    #: Current Claude models reject ``temperature`` with a 400; only the older
-    #: Haiku line still accepts it. We never send it, but the flag documents why.
-    supports_temperature: bool
+    #: Whether the model accepts ``output_config.effort``. Haiku 4.5 does not —
+    #: it still uses the older ``thinking={"type": "enabled", ...}`` form. This
+    #: matters when effort control is added; do not send effort where it is
+    #: unsupported.
+    supports_effort: bool
 
 
 #: Ordered best-first; the first entry is the default selection.
+#: Every value below was verified against the live Models API on 2026-09-04.
+#: Re-check with `uv run python scripts/check_models.py` after any change.
 MODEL_REGISTRY: dict[str, ModelSpec] = {
     "claude-opus-5": ModelSpec(
         model_id="claude-opus-5",
         provider="anthropic",
         max_tokens=128_000,
+        context_window=1_000_000,
         env_key="ANTHROPIC_API_KEY",
-        supports_temperature=False,
+        supports_effort=True,
     ),
     "claude-sonnet-5": ModelSpec(
         model_id="claude-sonnet-5",
         provider="anthropic",
         max_tokens=128_000,
+        context_window=1_000_000,
         env_key="ANTHROPIC_API_KEY",
-        supports_temperature=False,
+        supports_effort=True,
     ),
     "claude-haiku-4-5-20251001": ModelSpec(
         model_id="claude-haiku-4-5-20251001",
         provider="anthropic",
         max_tokens=64_000,
+        context_window=200_000,
         env_key="ANTHROPIC_API_KEY",
-        supports_temperature=True,
+        supports_effort=False,
     ),
 }
 

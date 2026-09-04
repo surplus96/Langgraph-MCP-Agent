@@ -290,7 +290,9 @@ with st.sidebar:
     st.subheader("📊 System Information")
     st.write(f"🛠️ MCP Tools Count: {state.tool_count}")
     st.write(f"🧠 Current Model: {state.selected_model}")
-    st.write(f"📐 Max Output Tokens: {MODEL_REGISTRY[state.selected_model].max_tokens:,}")
+    spec = MODEL_REGISTRY[state.selected_model]
+    st.write(f"📐 Max Output Tokens: {spec.max_tokens:,}")
+    st.write(f"📥 Context Window: {spec.context_window:,}")
 
     if st.button("Apply Settings", type="primary", use_container_width=True):
         try:

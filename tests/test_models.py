@@ -51,6 +51,27 @@ def test_build_model_never_sends_temperature(monkeypatch, model_id: str):
     assert model.max_tokens == MODEL_REGISTRY[model_id].max_tokens
 
 
+@pytest.mark.parametrize("model_id", list(MODEL_REGISTRY))
+def test_context_window_is_at_least_the_output_budget(model_id: str):
+    spec = MODEL_REGISTRY[model_id]
+    assert spec.context_window >= spec.max_tokens
+
+
+def test_registry_matches_values_verified_against_the_models_api():
+    """Verified 2026-09-04 via GET /v1/models. Re-check with scripts/check_models.py."""
+    verified = {
+        "claude-opus-5": (128_000, 1_000_000, True),
+        "claude-sonnet-5": (128_000, 1_000_000, True),
+        "claude-haiku-4-5-20251001": (64_000, 200_000, False),
+    }
+    assert set(MODEL_REGISTRY) == set(verified)
+    for model_id, (max_tokens, context, effort) in verified.items():
+        spec = MODEL_REGISTRY[model_id]
+        assert spec.max_tokens == max_tokens
+        assert spec.context_window == context
+        assert spec.supports_effort is effort
+
+
 def test_unknown_model_raises():
     with pytest.raises(KeyError):
         build_model("gpt-4o")
