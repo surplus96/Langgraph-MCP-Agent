@@ -1,32 +1,44 @@
 services:
   app:
     build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        BUILDPLATFORM: ${BUILDPLATFORM:-linux/amd64}
-        TARGETPLATFORM: ${TARGETPLATFORM:-linux/amd64}
-    image: teddylee777/langgraph-mcp-agents:0.2.1
-    platform: ${TARGETPLATFORM:-linux/amd64}
+      # Build context is the repository root so the Dockerfile can copy src/.
+      context: ..
+      dockerfile: dockers/Dockerfile
+    image: langgraph-mcp-agent:0.3.0
     ports:
-      - "8585:8585"
+      # Bound to loopback. This app launches MCP servers as subprocesses, so it
+      # must not be exposed directly; put a reverse proxy with TLS and real
+      # authentication in front of it before making it reachable.
+      - "127.0.0.1:8585:8585"
     volumes:
-      # Optionally, you can remove this volume if you don’t need the file at runtime
-      - ./.env:/app/.env:ro
       - ./data:/app/data:rw
-    env_file:
-      - ./.env
     environment:
       - PYTHONUNBUFFERED=1
-      - USE_LOGIN=${USE_LOGIN:-false}
-      - USER_ID=${USER_ID:-}
-      - USER_PASSWORD=${USER_PASSWORD:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Login is on by default. The app refuses to render a login form when
+      # USER_ID/USER_PASSWORD are unset, so it fails closed rather than open.
+      - USE_LOGIN=${USE_LOGIN:-true}
+      - USER_ID=${USER_ID:?set USER_ID in dockers/.env}
+      - USER_PASSWORD=${USER_PASSWORD:?set USER_PASSWORD in dockers/.env}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in dockers/.env}
+      # In-app MCP tool registration spawns subprocesses; opt in deliberately.
+      - MCP_ALLOW_TOOL_EDIT=${MCP_ALLOW_TOOL_EDIT:-false}
+      - MCP_ALLOWED_COMMANDS=${MCP_ALLOWED_COMMANDS:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - NODE_OPTIONS=${NODE_OPTIONS:-}
+    env_file:
+      - ./.env
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 4g
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8585/_stcore/health"]
+      test: ["CMD", "curl", "--fail", "http://localhost:8585/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3

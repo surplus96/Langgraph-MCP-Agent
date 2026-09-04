@@ -1,0 +1,28 @@
+# Never copy history into an image layer: it contains a leaked credential.
+.git
+.gitignore
+.github
+
+# Secrets and per-deployment runtime config
+.env
+.env.*
+config.json
+
+# Local environments and caches
+.venv
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Not needed at runtime
+tests/
+docs/
+assets/
+dockers/
+data/
+README_KOR.md
+
+# README.md is NOT excluded: pyproject.toml declares it as the project
+# readme, so the hatchling build fails without it.
