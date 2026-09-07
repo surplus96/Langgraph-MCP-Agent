@@ -4,7 +4,7 @@ services:
       # Build context is the repository root so the Dockerfile can copy src/.
       context: ..
       dockerfile: dockers/Dockerfile
-    image: langgraph-mcp-agent:0.3.0
+    image: langgraph-mcp-agent:0.4.0
     ports:
       # Bound to loopback. This app launches MCP servers as subprocesses, so it
       # must not be exposed directly; put a reverse proxy with TLS and real
