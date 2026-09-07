@@ -14,7 +14,13 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from mcp_agent.checkpoints import DISABLED, checkpoint_path, load_history, open_checkpointer
+from mcp_agent.checkpoints import (
+    DISABLED,
+    checkpoint_path,
+    delete_thread,
+    load_history,
+    open_checkpointer,
+)
 
 
 def test_path_defaults_next_to_the_config(monkeypatch):
@@ -240,3 +246,81 @@ def test_selection_is_by_block_type_not_by_the_presence_of_a_text_key(tmp_path):
         {"role": "user", "content": "what time is it"},
         {"role": "assistant", "content": "Half past four."},
     ]
+
+
+# --- Deleting a conversation --------------------------------------------------
+
+
+def _delete(path: str, thread_id: str) -> bool:
+    """Delete through a fresh connection, as the running app would."""
+
+    async def run() -> bool:
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        connection = await aiosqlite.connect(path)
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        deleted = await delete_thread(saver, thread_id)
+        await connection.close()
+        return deleted
+
+    return asyncio.run(run())
+
+
+def test_deleting_a_thread_actually_removes_it(tmp_path):
+    """Resetting has to reach storage, or the file only ever grows."""
+    path = str(tmp_path / "checkpoints.db")
+    _write_turn(path, "thread-doomed", [HumanMessage(content="forget this")])
+    assert _read_history(path, "thread-doomed")  # precondition
+
+    assert _delete(path, "thread-doomed") is True
+    assert _read_history(path, "thread-doomed") == []
+
+
+def test_deleting_one_thread_leaves_the_others_alone(tmp_path):
+    """The obvious way to get this wrong is to clear the whole table."""
+    path = str(tmp_path / "checkpoints.db")
+    _write_turn(path, "thread-keep", [HumanMessage(content="keep this")])
+    _write_turn(path, "thread-drop", [HumanMessage(content="drop this")])
+
+    _delete(path, "thread-drop")
+
+    assert _read_history(path, "thread-keep") == [{"role": "user", "content": "keep this"}]
+    assert _read_history(path, "thread-drop") == []
+
+
+def test_deleting_an_unknown_thread_is_not_an_error(tmp_path):
+    """Resetting a conversation that was never stored is normal."""
+    path = str(tmp_path / "checkpoints.db")
+    _write_turn(path, "thread-real", [HumanMessage(content="hello")])
+    assert _delete(path, "thread-never-existed") is True
+
+
+def test_deleting_without_a_thread_id_does_nothing():
+    """Observed by a flag, not by raising.
+
+    An earlier version signalled "should not have been called" with an
+    AssertionError, which `delete_thread` catches like any other exception — so
+    removing the guard produced the same False and the suite stayed green.
+    """
+
+    class Recording:
+        called = False
+
+        async def adelete_thread(self, thread_id):
+            self.called = True
+
+    checkpointer = Recording()
+    assert asyncio.run(delete_thread(checkpointer, "")) is False
+    assert not checkpointer.called, "an empty thread id reached the checkpointer"
+
+
+def test_a_failed_delete_is_reported_rather_than_raised():
+    """Tidying up must never stop someone starting a new conversation."""
+
+    class Exploding:
+        async def adelete_thread(self, thread_id):
+            raise RuntimeError("database is locked")
+
+    assert asyncio.run(delete_thread(Exploding(), "thread-abc")) is False

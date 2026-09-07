@@ -460,11 +460,26 @@ with st.sidebar:
     st.divider()
     st.subheader("🔄 Actions")
 
-    if st.button("Reset Conversation", use_container_width=True, type="primary"):
+    if st.button(
+        "Reset Conversation",
+        use_container_width=True,
+        type="primary",
+        help=(
+            "Starts a new conversation and deletes this one from storage. "
+            "It cannot be recovered, including from a bookmarked link."
+        ),
+    ):
+        from mcp_agent.checkpoints import delete_thread
+
+        abandoned = state.thread_id
         state.reset_conversation()
         # The id in the URL has to move too. Leaving it would send the next
         # reload straight back into the conversation just abandoned.
         st.query_params["thread"] = state.thread_id
+        # Deleted after rotating, and never allowed to raise: if the tidy-up
+        # fails, the user is still in the new conversation they asked for
+        # rather than stuck in the one they wanted to leave.
+        run_sync(delete_thread(get_checkpointer(), abandoned), timeout=30)
         st.rerun()
 
     if login_required and state.authenticated:

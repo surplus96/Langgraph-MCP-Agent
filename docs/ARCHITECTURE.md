@@ -271,6 +271,15 @@ the part that looks like the feature:
 Set `CHECKPOINT_DB_PATH=:memory:` to opt out deliberately rather than by
 accident.
 
+**Resetting deletes.** Rotating the thread id and walking away was fine while
+the store was in memory and the process was about to forget it anyway. Against
+a durable store it leaves rows the application then offers no way to reach or
+remove — a file that only grows, holding conversations the user believes they
+discarded. So the reset button erases the thread it abandons, and says so in
+its tooltip, because that also destroys a bookmarked link to it. The deletion
+happens *after* the id rotates and can never raise: failing to tidy up must not
+leave someone stuck in the conversation they asked to leave.
+
 `load_history` reconstructs text turns only. Tool calls are in the checkpoint,
 but the per-turn log the UI shows is assembled from the stream, and inventing a
 different-looking one would be worse than showing none.
@@ -292,7 +301,7 @@ user submits a prompt in app.py
 
 ## Testing
 
-144 tests, none of which need a network or an API key. The parts that matter:
+150 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache

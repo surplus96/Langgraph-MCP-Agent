@@ -82,6 +82,31 @@ async def open_checkpointer() -> Any:
     return saver
 
 
+async def delete_thread(checkpointer: Any, thread_id: str) -> bool:
+    """Erase one conversation from storage. True if it was deleted.
+
+    Resetting used to rotate the thread id and walk away, which was fine while
+    the store was in memory and the process was about to forget it anyway. With
+    a durable store, "walk away" means every reset leaves rows behind that the
+    application then offers no way to reach or remove — a file that only ever
+    grows, holding conversations the user believes they discarded.
+
+    Never raises. Failing to tidy up must not stop someone starting a new
+    conversation, which is the thing they actually asked for.
+    """
+    if not thread_id:
+        return False
+
+    try:
+        await checkpointer.adelete_thread(thread_id)
+    except Exception:
+        logger.exception("Could not delete stored conversation %s", thread_id)
+        return False
+
+    logger.info("Deleted stored conversation %s", thread_id)
+    return True
+
+
 def _text_of(content: Any) -> str:
     """Flatten a message's content to what the transcript should show.
 

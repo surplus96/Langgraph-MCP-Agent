@@ -355,3 +355,70 @@ def test_a_stored_conversation_is_replayed_after_a_restart(monkeypatch, tmp_path
     rendered = " ".join(block.value for block in app.markdown)
     assert "remember this" in rendered
     assert "Noted." in rendered
+
+
+def test_resetting_deletes_the_conversation_from_storage(monkeypatch, tmp_path):
+    """The reset button has to reach the database, not just the URL.
+
+    Rotating the thread id alone was fine while the store was in memory. With a
+    durable one it leaves rows the application offers no way to reach or remove
+    — a file that only grows, holding conversations the user thinks they
+    discarded.
+    """
+    import asyncio
+
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.runnables import RunnableConfig
+
+    from mcp_agent.checkpoints import load_history
+
+    db = tmp_path / "reset.db"
+    monkeypatch.setenv("CHECKPOINT_DB_PATH", str(db))
+
+    async def with_saver(fn):
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        connection = await aiosqlite.connect(str(db))
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        try:
+            return await fn(saver)
+        finally:
+            await connection.close()
+
+    async def seed(saver):
+        await saver.aput(
+            RunnableConfig(configurable={"thread_id": "doomed", "checkpoint_ns": ""}),
+            {
+                "v": 1,
+                "id": "checkpoint-1",
+                "ts": "2026-09-07T00:00:00+00:00",
+                "channel_values": {
+                    "messages": [HumanMessage(content="forget this"), AIMessage(content="Sure.")]
+                },
+                "channel_versions": {"messages": 1},
+                "versions_seen": {},
+            },
+            {"source": "loop", "step": 1, "parents": {}},
+            {"messages": 1},
+        )
+
+    asyncio.run(with_saver(seed))
+    assert asyncio.run(with_saver(lambda s: load_history(s, "doomed")))  # precondition
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.query_params["thread"] = "doomed"
+    app.run()
+    assert not app.exception
+
+    for button in app.button:
+        if button.label == "Reset Conversation":
+            app = button.click().run()
+            break
+    else:
+        raise AssertionError("Reset Conversation button not found")
+
+    assert not app.exception
+    assert _thread_param(app) != "doomed"
+    assert asyncio.run(with_saver(lambda s: load_history(s, "doomed"))) == []

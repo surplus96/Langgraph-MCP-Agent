@@ -19,6 +19,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each browser tab gets its own conversation, and a conversation can be
   bookmarked. An unwritable path falls back to memory with a warning rather than
   failing the app.
+- **Reset Conversation now deletes the conversation it abandons.** Rotating the
+  thread id and walking away cost nothing while the store was in memory. Against
+  a durable one it leaves rows the application offers no way to reach or remove.
+  The button's tooltip says the deletion is permanent, since it also destroys a
+  bookmarked link. Tidying up can never raise — a failure there must not leave
+  someone stuck in the conversation they asked to leave.
 
 - `docs/ARCHITECTURE.md`, `docs/MCP_TOOLS.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `CLAUDE.md` and this changelog.
@@ -158,7 +164,7 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 
 ### Added
 
-- 144 tests, none requiring a network or an API key, including
+- 150 tests, none requiring a network or an API key, including
   `AppTest`-driven smoke tests and lifecycle tests for the session pool.
 - `dockers/Dockerfile` and a consolidated `docker-compose.yaml`. The compose
   file previously referenced a `build:` target that did not exist.
