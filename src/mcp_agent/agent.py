@@ -15,7 +15,7 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from mcp_agent.models import DEFAULT_EFFORT, Effort, build_model
+from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, build_model
 from mcp_agent.streaming import astream_graph
 from mcp_agent.usage import TokenUsage
 
@@ -40,6 +40,11 @@ def _prompt_cache_ttl() -> Literal["5m", "1h"]:
 #: needs the count_tokens endpoint, and a warning is cheaper than a silent
 #: no-op.
 _CHARS_PER_TOKEN = 4
+
+#: Share of the context window at which history is summarized. Late on purpose:
+#: summarizing rewrites the message history, which throws away the cached
+#: prefix, so it should happen rarely rather than eagerly.
+SUMMARIZE_AT_FRACTION = 0.8
 
 SYSTEM_PROMPT = """<ROLE>
 You are a smart agent with an ability to use tools.
@@ -223,6 +228,7 @@ async def build_agent(
 ) -> AgentBundle:
     """Connect to the configured MCP servers and build the ReAct agent."""
     from langchain.agents import create_agent
+    from langchain.agents.middleware import SummarizationMiddleware
     from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -233,8 +239,11 @@ async def build_agent(
     # turns, which is a prerequisite for prompt caching later.
     tools = sorted(tools, key=lambda tool: tool.name)
 
+    spec = MODEL_REGISTRY[model_id]
+    model = build_model(model_id, effort)
+
     agent = create_agent(
-        build_model(model_id, effort),
+        model,
         tools,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
@@ -243,7 +252,18 @@ async def build_agent(
         # contiguous tool block), and a top-level one that follows the growing
         # message tail. All were previously re-sent at full price on every ReAct
         # iteration — up to `recursion_limit` times per user turn, not once.
-        middleware=[AnthropicPromptCachingMiddleware(ttl=_prompt_cache_ttl())],
+        middleware=[
+            # A safety net, not a routine cost saving. With a 1M context window
+            # a chat session realistically never reaches this, but without it a
+            # long one eventually fails outright on a context-length error
+            # instead of degrading. Summarizing rewrites history and so
+            # invalidates the cached prefix, which is why the trigger sits late.
+            SummarizationMiddleware(
+                model=model,
+                trigger=("tokens", int(spec.context_window * SUMMARIZE_AT_FRACTION)),
+            ),
+            AnthropicPromptCachingMiddleware(ttl=_prompt_cache_ttl()),
+        ],
     )
 
     prefix_chars = len(SYSTEM_PROMPT) + sum(

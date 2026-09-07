@@ -311,3 +311,46 @@ def test_ttl_falls_back_on_a_bad_value(monkeypatch):
     assert _prompt_cache_ttl() == "1h"
     monkeypatch.setenv("PROMPT_CACHE_TTL", "5m")
     assert _prompt_cache_ttl() == "5m"
+
+
+def test_summarization_and_caching_are_both_attached(monkeypatch):
+    """Adding history summarization must not displace the caching middleware."""
+    import asyncio
+
+    from langchain.agents.middleware import SummarizationMiddleware
+
+    from mcp_agent import agent as agent_module
+
+    captured: dict = {}
+
+    def fake_create_agent(model, tools, **kwargs):
+        captured.update(kwargs)
+        return "compiled-agent"
+
+    class FakeClient:
+        def __init__(self, config):
+            pass
+
+        async def get_tools(self):
+            return [alpha]
+
+    monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
+    monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+    asyncio.run(agent_module.build_agent("claude-opus-5", {}, None))
+
+    kinds = {type(m) for m in captured.get("middleware") or []}
+    assert AnthropicPromptCachingMiddleware in kinds
+    assert SummarizationMiddleware in kinds
+
+
+def test_summarization_triggers_late_enough_to_protect_the_cache(monkeypatch):
+    """Summarizing rewrites history and drops the cached prefix.
+
+    It has to be rare, so the trigger must sit well into the context window
+    rather than near the start of it.
+    """
+    from mcp_agent.agent import SUMMARIZE_AT_FRACTION
+
+    assert 0.5 < SUMMARIZE_AT_FRACTION < 1.0
