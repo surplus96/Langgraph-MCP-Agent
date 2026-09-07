@@ -196,6 +196,7 @@ Settings** again to rebuild the agent.
 | [CHANGELOG.md](CHANGELOG.md) | What changed in this release. |
 | [CLAUDE.md](CLAUDE.md) | Working agreement for AI coding agents in this repository. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | The modernization plan this work followed, including what was deliberately deferred. |
+| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | **Proposal, not built.** The operation-agent design for the next version, and the decisions it is waiting on. |
 
 ## License
 

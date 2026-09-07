@@ -194,6 +194,7 @@ uv run pytest -q     # 187개 테스트
 | [CHANGELOG.md](CHANGELOG.md) | 이번 릴리스의 변경 사항. |
 | [CLAUDE.md](CLAUDE.md) | 이 저장소에서 AI 코딩 에이전트가 지켜야 할 작업 규약. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 이 작업이 따른 현대화 계획과, 의도적으로 미룬 항목. |
+| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | **제안 단계이며 아직 구현되지 않음.** 다음 버전의 오퍼레이션 에이전트 설계와, 승인이 필요한 결정 사항. |
 
 ## 라이선스
 
