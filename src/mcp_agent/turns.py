@@ -126,17 +126,20 @@ class Turn:
         repainting the same placeholder once per streamed token.
         """
         while True:
+            # Before the wait, not only after it. Leaving the deadline to
+            # `_collect` made it dead code — iteration ended only when the
+            # future finished, so a loop that never finished held the script
+            # thread and the browser with it. Checking it only in the
+            # `queue.Empty` branch below fixed that case and left the other:
+            # a stream that keeps producing never goes empty, so it was still
+            # unbounded. Measured with a producer that starves the loop —
+            # 3.05s of events against a 0.10s deadline.
+            if self._out_of_time() and not self._future.done():
+                break
             try:
                 first = self._events.get(timeout=_POLL_SECONDS)
             except queue.Empty:
                 if self._future.done():
-                    break
-                if self._out_of_time():
-                    # The deadline is only load-bearing here. Leaving it to
-                    # `_collect` made it dead code: iteration ended only when
-                    # the future finished, so a loop that never finished held
-                    # the script thread and the browser with it, and `_collect`
-                    # was never reached to notice.
                     break
                 continue
 
@@ -154,7 +157,8 @@ class Turn:
                 if kind in latest:
                     yield latest[kind]
 
-        self._result = self._collect()
+        if self._result is None:
+            self._result = self._collect()
 
     def _out_of_time(self) -> bool:
         """True once the whole turn has outlived its deadline."""
@@ -180,9 +184,13 @@ class Turn:
         except TimeoutError:
             self._future.cancel()
             logger.error("Turn did not return within %ss", self._deadline)
-            return QueryResult(
-                error=f"The agent did not respond within {self._deadline:.0f} seconds."
-            )
+            # `remaining` is not None on this path, so neither is `_deadline`;
+            # spelled out rather than relying on that, because the format spec
+            # below would raise on None and turn a reported timeout into a
+            # crash. The number is the deadline, not `timeout_seconds`: it is
+            # how long the page actually waited.
+            waited = self._deadline if self._deadline is not None else 0.0
+            return QueryResult(error=f"The agent did not respond within {waited:.0f} seconds.")
         except Exception as exc:
             # run_query catches its own failures, so reaching here means the
             # wiring around it broke — worth reporting with the actual reason

@@ -170,47 +170,75 @@ class SessionPool:
             ready.append((server_name, future))
 
         collected: list[BaseTool] = []
+        # Which server each final name came from, so a collision can name the
+        # servers to fix rather than repeating the tool's own name back.
+        origins: dict[str, list[str]] = {}
         for server_name, future in ready:
             try:
-                collected.extend(await future)
+                tools = await future
             except Exception as exc:
                 logger.warning("MCP server %r failed to start: %s", server_name, exc)
                 self.failures.append(
                     ServerFailure(server_name=server_name, error=str(exc), at_startup=True)
                 )
+                continue
+            collected.extend(tools)
+            for tool in tools:
+                origins.setdefault(tool.name, []).append(server_name)
 
         # Deterministic order keeps the tool-definition block byte-stable, which
         # is what makes the cached prompt prefix reusable across turns.
         self.tools = sorted(collected, key=lambda tool: tool.name)
-        self._warn_about_duplicates()
+        self._warn_about_duplicates(origins)
 
-    def _warn_about_duplicates(self) -> None:
-        """Say so if two tools still share a name.
+    def _warn_about_duplicates(self, origins: dict[str, list[str]]) -> None:
+        """Say so if two tools still share a name, and say where to fix it.
 
         Server prefixes make this unreachable for ordinary configurations, but
-        a server whose own tool names already carry another server's prefix
-        would slip through, as would two long server names that `namespaced`
-        had to truncate to the same thing. The failure is silent: `create_agent`
-        binds one and drops the rest, so the model simply never sees a tool the
-        sidebar says it has.
-        """
-        seen: dict[str, int] = {}
-        for tool in self.tools:
-            seen[tool.name] = seen.get(tool.name, 0) + 1
+        three routes survive them: a server whose own tool names already carry
+        another server's prefix; two server names `namespaced` had to shorten
+        to the same thing; and a server whose tool names are entirely outside
+        `[a-zA-Z0-9_-]`, which collapses every one of them to the same cleaned
+        name. The failure is silent otherwise: `create_agent` binds one and
+        drops the rest, so the model never sees a tool the sidebar counts.
 
-        for name, count in seen.items():
-            if count > 1:
-                logger.warning("%d tools are named %r; only one will reach the model", count, name)
-                self.failures.append(
-                    ServerFailure(
-                        server_name=name,
-                        error=(
-                            f"{count} registered tools are named {name!r}. Only one of "
-                            "them can be used; rename them at the server."
-                        ),
-                        at_startup=True,
-                    )
+        The remedy differs by route, which is why the servers are tracked. Two
+        servers shortened together are fixed in the configuration; one server
+        colliding with itself has to be fixed at the server.
+        """
+        for name, servers in origins.items():
+            if len(servers) < 2:
+                continue
+
+            logger.warning(
+                "%d tools are named %r (from %s); only one will reach the model",
+                len(servers),
+                name,
+                ", ".join(sorted(set(servers))),
+            )
+
+            distinct = sorted(set(servers))
+            if len(distinct) > 1:
+                blamed = ", ".join(distinct)
+                remedy = (
+                    f"The server names {blamed} produce the same tool prefix. "
+                    "Rename one of them in your MCP configuration."
                 )
+            else:
+                blamed = distinct[0]
+                remedy = (
+                    f"They all come from {blamed!r}. Rename them at the server — note that "
+                    "names outside [a-zA-Z0-9_-] are rewritten before use, so names that "
+                    "differ only outside that set arrive here identical."
+                )
+
+            self.failures.append(
+                ServerFailure(
+                    server_name=blamed,
+                    error=f"{len(servers)} registered tools are named {name!r}. {remedy}",
+                    at_startup=True,
+                )
+            )
 
     async def _keep(
         self,

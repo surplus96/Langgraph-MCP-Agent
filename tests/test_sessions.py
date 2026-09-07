@@ -300,13 +300,17 @@ async def test_tool_names_are_namespaced_by_server(monkeypatch):
 async def test_renaming_does_not_disturb_the_call(monkeypatch):
     """The MCP server is still asked for the tool by its own name.
 
-    The adapter closes over the raw name, so a rename is visible to the model
-    and to nobody else. If renaming ever started rewriting the call, every tool
-    would fail with `unknown tool`.
+    Verified in the adapter's source as well as here: it closes over the *MCP*
+    tool's name when building the call, never the LangChain tool's, so the
+    rename is visible to the model and to nobody else. The stub closes over the
+    unprefixed name the same way; if renaming ever rewrote the call, the model
+    would see `github_alpha` and the server would be asked for a tool it does
+    not have.
     """
+    called_as = "alpha"
 
     async def echo(value: str) -> str:
-        return f"called with {value}"
+        return f"{called_as}:{value}"
 
     async def fake_load(session, server_name=None, **kwargs):
         renamable = alpha.model_copy()
@@ -317,7 +321,7 @@ async def test_renaming_does_not_disturb_the_call(monkeypatch):
 
     pool = await open_pool({"github": {}})
     assert pool.tools[0].name == "github_alpha"
-    assert await pool.tools[0].ainvoke({"value": "x"}) == "called with x"
+    assert await pool.tools[0].ainvoke({"value": "x"}) == "alpha:x"
 
 
 async def test_tools_that_still_collide_are_reported(monkeypatch):
@@ -392,3 +396,69 @@ def test_a_tool_name_the_api_would_reject_is_also_cleaned():
     from mcp_agent.sessions import namespaced
 
     assert namespaced("github", "search files!") == "github_search_files"
+
+
+@pytest.mark.parametrize(
+    ("server_name", "tool_name", "expected"),
+    [
+        ("@scope/pkg", "search", "scope_pkg_search"),
+        (
+            "@smithery-ai/server-sequential-thinking",
+            "think",
+            "smithery-ai_server-sequential-thinking_think",
+        ),
+        ("", "search", "search"),
+        ("///", "search", "search"),
+        ("-", "search", "-_search"),
+        ("a.b.c", "search", "a_b_c_search"),
+        ("github", "", "github_tool"),
+        ("github", "!!!", "github_tool"),
+        ("서버", "검색", "tool"),
+    ],
+)
+def test_what_a_name_actually_becomes(server_name, tool_name, expected):
+    """Exact, not just "matches the pattern".
+
+    The regex admits `_scope_pkg_search`, `__search` and `github_` — so three
+    ways of getting this wrong pass a pattern check and are only visible when
+    the whole string is written down. The last row is the one that costs
+    something real: a server whose tool names are entirely non-ASCII collapses
+    every one of them to the same name, which is why the collision report below
+    has to work.
+    """
+    from mcp_agent.sessions import namespaced
+
+    assert namespaced(server_name, tool_name) == expected
+
+
+async def test_two_servers_shortened_alike_are_blamed_by_name(monkeypatch):
+    """The remedy is in the config, not at the server, and has to say so.
+
+    Two long server names shorten to the same prefix and every tool from both
+    collides. Telling the user to "rename them at the server" sends them to fix
+    something that is not broken.
+    """
+    pool = await open_pool({"s" * 70: {}, "s" * 80: {}})
+
+    assert pool.healthy is False
+    reported = " ".join(failure.error for failure in pool.failures)
+    assert "MCP configuration" in reported, pool.failures
+    assert all(failure.server_name.count(",") == 1 for failure in pool.failures), pool.failures
+
+
+async def test_one_server_colliding_with_itself_is_blamed_at_the_server(monkeypatch):
+    """Two tool names that differ only outside `[a-zA-Z0-9_-]` arrive identical."""
+
+    async def korean(session, server_name=None, **kwargs):
+        first = alpha.model_copy(update={"name": "검색"})
+        second = alpha.model_copy(update={"name": "도구"})
+        return [first, second]
+
+    monkeypatch.setattr("langchain_mcp_adapters.tools.load_mcp_tools", korean)
+
+    pool = await open_pool({"papers": {}})
+
+    assert [t.name for t in pool.tools] == ["papers_tool", "papers_tool"]
+    assert pool.healthy is False
+    assert [f.server_name for f in pool.failures] == ["papers"], pool.failures
+    assert "Rename them at the server" in pool.failures[0].error

@@ -35,9 +35,10 @@ from mcp_agent.models import (  # noqa: E402
     MODEL_REGISTRY,
     available_models,
 )
+from mcp_agent.rendering import draw  # noqa: E402
 from mcp_agent.runtime import run_sync  # noqa: E402
 from mcp_agent.state import AppState  # noqa: E402
-from mcp_agent.turns import Turn, TurnEvent  # noqa: E402
+from mcp_agent.turns import Turn  # noqa: E402
 from mcp_agent.usage import TokenUsage  # noqa: E402
 
 # `override=False` so a real environment variable (from Compose, Kubernetes or a
@@ -161,23 +162,6 @@ st.markdown("✨ Ask questions to the ReAct agent that utilizes MCP tools.")
 
 
 # --- Rendering ----------------------------------------------------------------
-
-
-def draw(event: TurnEvent, text_placeholder: Any, tool_placeholder: Any) -> None:
-    """Draw one streamed event.
-
-    Called from the script thread only. The agent runs on the background loop
-    and hands its output over as data — see :mod:`mcp_agent.turns` for why
-    drawing from there raises on every write.
-    """
-    if event.kind == "text":
-        text_placeholder.markdown(event.payload)
-        return
-
-    with tool_placeholder.expander("🔧 Tool Call Information", expanded=True):
-        # st.code, not st.markdown: tool output is untrusted and a literal
-        # fence inside it would otherwise escape into live markdown.
-        st.code(event.payload, language="json")
 
 
 def render_usage(usage: TokenUsage) -> None:

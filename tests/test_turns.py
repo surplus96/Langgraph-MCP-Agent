@@ -28,9 +28,11 @@ class StubAgent:
         self._chunks = chunks
         self.threads: list[str] = []
         self.configs: list[dict] = []
+        self.inputs: list = []
 
     async def astream(self, inputs, config, stream_mode="messages"):
         self.configs.append(dict(config or {}))
+        self.inputs.append(inputs)
         for chunk in self._chunks:
             self.threads.append(threading.current_thread().name)
             yield chunk, {"langgraph_node": "model"}
@@ -50,11 +52,18 @@ def _isolated(tmp_path, monkeypatch):
 
 
 def run_turn(agent, message: str = "do the thing") -> AppTest:
-    """Start the app with `agent` installed, then send one chat message."""
+    """Start the app with `agent` installed, then send one chat message.
+
+    `timeout_seconds` is cut from the app's 120s default so that a broken
+    iteration bound fails in seconds rather than hanging the suite for minutes.
+    Measured: with the termination check removed, this file ran past a 300s cap
+    while the same mutation fails a `Turn` test alone in under 7s.
+    """
     app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
     state = app.session_state[SESSION_KEY]
     state.agent = agent
     state.session_initialized = True
+    state.timeout_seconds = 2
     app.run()
     return app.chat_input[0].set_value(message).run()
 
@@ -64,13 +73,14 @@ def _said(app: AppTest) -> str:
 
 
 def test_a_streamed_answer_reaches_the_page(monkeypatch):
-    """The whole point. This failed on every turn before the queue existed.
+    """A turn completes and its answer is on the page. This is a smoke test.
 
-    Two chunks, not one, and that is load-bearing: the turn ends in
-    `st.rerun()`, so what is left on the page is rebuilt from the transcript
-    and a single chunk would look identical whether it was streamed or not.
-    An answer split across chunks only reads correctly if the streamed events
-    were actually accumulated.
+    It is *not* evidence that streaming works, though it was written as if it
+    were: the turn ends in `st.rerun()`, so what this reads is the transcript
+    rebuilt from `result.text`, and `StreamAccumulator` — not the event queue —
+    is what joined the two chunks. Gutting the drawing code leaves this green.
+    `tests/test_rendering.py` and the `Turn` section below are what hold the
+    streamed path.
 
     Not asserted on `app.error`: `st.rerun()` discards the widget, so that
     assertion passes even when the turn drew an error.
@@ -93,7 +103,13 @@ def test_the_answer_is_kept_in_the_transcript(monkeypatch):
 
 
 def test_tool_output_is_rendered_as_code(monkeypatch):
-    """Not markdown: a literal fence in untrusted output must not escape."""
+    """The tool log survives into the replayed transcript as a code block.
+
+    This is `render_history`, not the streaming path: swapping `st.code` for
+    `st.markdown` in `draw` leaves it green, because the rerun redraws the log
+    from `state.history`. Both matter — an escape is an escape in either place
+    — and the streamed half is held in `tests/test_rendering.py`.
+    """
     app = run_turn(
         StubAgent(
             (ToolMessage(content='{"time": "16:30"}', tool_call_id="call-1")),
@@ -280,6 +296,27 @@ def test_a_blocked_loop_gives_up_instead_of_holding_the_page():
     assert result.error and "did not respond" in result.error, result
 
 
+def _spy_turn(monkeypatch):
+    """Install a `Turn` that records how `app.py` built it and what it drew."""
+    import mcp_agent.turns as turns
+
+    record: dict = {"drawn": []}
+
+    class SpyTurn(turns.Turn):
+        def __init__(self, agent, query, **kwargs):
+            record["query"] = query
+            record.update(kwargs)
+            super().__init__(agent, query, **kwargs)
+
+        def __iter__(self):
+            for event in super().__iter__():
+                record["drawn"].append(event)
+                yield event
+
+    monkeypatch.setattr("mcp_agent.turns.Turn", SpyTurn)
+    return record
+
+
 def test_the_page_actually_iterates_the_turn(monkeypatch):
     """Holds the streaming loop in `app.py` itself.
 
@@ -289,17 +326,94 @@ def test_the_page_actually_iterates_the_turn(monkeypatch):
     other test in this file green, and the app would have stopped streaming
     entirely while still printing the finished answer.
     """
-    import mcp_agent.turns as turns
-
-    drawn: list = []
-
-    class SpyTurn(turns.Turn):
-        def __iter__(self):
-            for event in super().__iter__():
-                drawn.append(event)
-                yield event
-
-    monkeypatch.setattr("mcp_agent.turns.Turn", SpyTurn)
+    record = _spy_turn(monkeypatch)
     run_turn(StubAgent(AIMessageChunk(content="Hello")))
 
+    drawn = record["drawn"]
     assert [(e.kind, e.payload) for e in drawn] == [("text", "Hello")]
+
+
+def test_the_page_hands_the_turn_what_the_session_is_set_to(monkeypatch):
+    """The `app.py` -> `Turn` hop, which nothing else covers.
+
+    Every one of these can be hard-wired at the call site with the rest of the
+    suite green, and each is a real failure: a fixed `thread_id` merges every
+    conversation into one checkpoint, a fixed `recursion_limit` ignores the
+    sidebar, a dropped `timeout_seconds` unbounds the turn, and a dropped query
+    asks the agent nothing at all.
+    """
+    record = _spy_turn(monkeypatch)
+    agent = StubAgent(AIMessageChunk(content="Hello"))
+    app = run_turn(agent, "what time is it")
+    state = app.session_state[SESSION_KEY]
+
+    assert record["query"] == "what time is it"
+    assert record["thread_id"] == state.thread_id
+    assert record["recursion_limit"] == state.recursion_limit
+    assert record["timeout_seconds"] == state.timeout_seconds
+
+    # And that the query survives the second hop, into the graph's input.
+    sent = agent.inputs[-1]["messages"][-1]
+    assert sent.content == "what time is it"
+
+
+def test_the_turn_budget_reaches_the_agent():
+    """Dropping it costs the partial-output guarantee, not just the bound.
+
+    `run_query` owns the turn deadline for one reason: a turn cut short still
+    reports the text it streamed and the tokens it spent. If `Turn` stops
+    forwarding `timeout_seconds`, the only remaining bound is `Turn`'s own,
+    which reports "did not respond" and throws the partial turn away.
+    """
+    import asyncio
+
+    class SlowAgent:
+        async def astream(self, inputs, config, stream_mode="messages"):
+            yield AIMessageChunk(content="Half past "), {"langgraph_node": "model"}
+            await asyncio.sleep(10)
+            yield AIMessageChunk(content="four."), {"langgraph_node": "model"}
+
+    events, result = _drive(SlowAgent(), timeout_seconds=0.2, grace_seconds=5.0)
+
+    assert result.error and "exceeded" in result.error, result
+    assert result.text == "Half past ", "the partial answer was thrown away"
+    assert events and events[-1].payload == "Half past "
+
+
+def test_collecting_the_result_waits_only_what_is_left():
+    """Iteration has already spent the deadline; waiting it again doubles it.
+
+    The page is frozen for the whole of that wait, so the difference is what
+    the user sits through — 0.6s here against 1.2s if `_collect` restarts the
+    clock.
+    """
+    import time
+
+    class BlockingAgent:
+        async def astream(self, inputs, config, stream_mode="messages"):
+            time.sleep(3.0)  # noqa: ASYNC251 — blocking the loop is the point
+            yield AIMessageChunk(content="too late"), {"langgraph_node": "model"}
+
+    started = time.monotonic()
+    _drive(BlockingAgent(), timeout_seconds=0.5, grace_seconds=0.1)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.1, f"took {elapsed:.2f}s for a 0.6s deadline"
+
+
+def test_a_batch_draws_the_tool_call_before_the_answer_to_it():
+    """Both land in one batch when the turn outruns the drawing thread.
+
+    The answer reads as a response to the tool call, so drawing it above the
+    call inverts the conversation. Forced by letting the turn finish before
+    iteration starts, which is what puts both events in the queue at once.
+    """
+    turn = _turn(
+        StubAgent(
+            ToolMessage(content='{"time": "16:30"}', tool_call_id="call-1"),
+            AIMessageChunk(content="Half past four."),
+        )
+    )
+    turn._future.result(timeout=10)
+
+    assert [event.kind for event in turn] == ["tool", "text"]
