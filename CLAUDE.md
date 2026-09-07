@@ -102,13 +102,21 @@ report the work as verified.
 and in CI. If a scan flags your change, fix the change. `.gitleaksignore` is for
 historical, already-rotated findings only, and each entry must say so.
 
+Do not try to make the scan pass by configuring it. Every route was reproduced
+and closed: CI refuses to run if a `.gitleaks.toml` exists, `--ignore-gitleaks-allow`
+neutralises a `# gitleaks:allow` comment, and a pull request touching
+`.gitleaksignore` fails. A red `secrets` job means there is a secret, not that
+the scanner needs tuning.
+
 Never weaken the `${VAR:?message}` guards in `dockers/docker-compose.yaml` to
 satisfy a scanner. They contain no secret; the flag is a false positive and the
 guard is what makes the deployment fail closed.
 
-The history contains one revoked OpenAI key at commit `5cd21de`. It is not being
-purged — that decision is made, with reasons in [SECURITY.md](SECURITY.md). Do
-not propose rewriting history.
+The history contains credentials that were all revoked on 2025-09-04: an OpenAI
+key and a LangSmith key in `dockers/.env.example`, and a Smithery key and
+profile in `config.json`, at commits `5cd21de` and `c75d5c5`. The history is not
+being purged — that decision is made, with reasons in
+[SECURITY.md](SECURITY.md). Do not propose rewriting it.
 
 ## The agent team
 

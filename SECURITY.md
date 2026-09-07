@@ -126,11 +126,38 @@ contain placeholders only.
 
 - **`gitleaks`** runs in CI (`secrets` job) over the **full commit history** on
   every push and pull request, and in `.pre-commit-config.yaml` for local
-  commits. Both use the pinned same version.
+  commits. Both use the same pinned version, so the two rulesets agree.
 - **`.gitleaksignore`** holds fingerprints gitleaks should stop reporting. Only
   historical, already-rotated findings belong there. A finding in current code
   is a bug to fix, not a line to add.
 - **`pip-audit`** runs in CI against the exported lockfile.
+
+#### The scan is not configurable from inside the branch it scans
+
+A secret scan that the scanned code can switch off is decoration. Three ways
+that was possible were reproduced against this repository and then closed:
+
+| Bypass | Reproduced | Closed by |
+|---|---|---|
+| A `.gitleaks.toml` in the repository, whose allowlist is `.*` | A committed live-shaped Anthropic key went from exit 1 to exit 0 | A guard step that fails the build if the file exists at all |
+| A trailing `# gitleaks:allow` comment in the same commit as the secret | Same key, exit 0 | `--ignore-gitleaks-allow` in CI (the hatch stays in the pre-commit hook, where a human sees the result) |
+| Appending the finding's own fingerprint to `.gitleaksignore` | Suppresses it in the same pull request | A guard step that fails a pull request touching that file |
+
+CI also refuses a **tracked `config.json`**. That file is gitignored, and it
+defeats the default rules by shape rather than by value: a key as a bare JSON
+array element, with `--key` on the preceding line, gives gitleaks no adjacent
+assignment to anchor on. A rule change would not reliably catch it; keeping the
+file untracked does.
+
+#### What a green scan does and does not mean
+
+It means no *known-shape* secret was found. Measured against gitleaks 8.28.0's
+default rules, `sk-ant-api03-…` and `sk-proj-…` keys are detected; a legacy
+`sk-` + 48-character key, a bare `AKIA…` access key ID, and a UUID-shaped key
+in a JSON array are not. `--max-decode-depth 2` is set so a base64-wrapped
+secret is looked at, which the default depth of 0 does not do.
+
+Read the scan as a floor, not a guarantee.
 
 ### Known historical exposure
 
@@ -138,8 +165,15 @@ An OpenAI API key and a LangSmith API key were committed to
 `dockers/.env.example` on 2025-07-08, before this modernization, and remained in
 the history until found on 2025-09-04.
 
-**Both keys were revoked on 2025-09-04.** Smithery profiles and API keys were
-reset at the same time; no usage was recorded against them.
+A Smithery API key and profile ID were also committed, in `config.json`, in the
+same first commit and again at `c75d5c5`. Note that the secret scanner does
+**not** find this one — it is a bare JSON array element with no adjacent
+assignment keyword — which is why CI now refuses a tracked `config.json`
+outright rather than relying on detection.
+
+**All of these credentials were revoked on 2025-09-04**, and the Smithery
+profiles and API keys were reset at the same time. No usage was recorded
+against any of them.
 
 The history is **deliberately not rewritten**. This is a public repository with
 existing clones and forks, so a purge would not recall the secrets and would

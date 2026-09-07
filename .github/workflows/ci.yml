@@ -1,5 +1,10 @@
 name: CI
 
+# Every job here executes repository-controlled code (pytest, docker build,
+# a downloaded scanner). None of them need to write anything back.
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -67,17 +72,77 @@ jobs:
           SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
         run: |
           set -euo pipefail
-          tarball="gitleaks_${VERSION}_linux_x64.tar.gz"
-          curl -sSfL -o "$tarball" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/${tarball}"
+          tarball="${RUNNER_TEMP}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -sSfL --proto '=https' --proto-redir '=https' -o "$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
           echo "${SHA256}  ${tarball}" | sha256sum --check --strict
-          tar -xzf "$tarball" gitleaks
-          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          # Extract the one member, into the runner's temp dir: the tarball also
+          # contains LICENSE and README.md, which a bare extract would drop on
+          # top of this repository's own copies inside the checkout.
+          tar -xzf "$tarball" -C "${RUNNER_TEMP}" gitleaks
+          sudo install -m 0755 "${RUNNER_TEMP}/gitleaks" /usr/local/bin/gitleaks
+
+      - name: Reject in-tree scanner configuration
+        # gitleaks' config precedence ends at ./.gitleaks.toml — a file the
+        # branch being scanned controls. Reproduced: adding a .gitleaks.toml
+        # whose allowlist is `.*` turns a committed live-shaped Anthropic key
+        # from exit 1 into exit 0, silently. The scan has to be un-configurable
+        # from inside the tree it is scanning, so the default ruleset stands and
+        # the file is refused outright rather than ignored.
+        run: |
+          set -euo pipefail
+          if [ -e .gitleaks.toml ] || [ -e gitleaks.toml ]; then
+            echo "::error::A gitleaks config in the repository can disable this scan. Refusing to run."
+            exit 1
+          fi
+
+      - name: Reject a committed config.json
+        # config.json holds credentials for the MCP servers it launches, and its
+        # shape defeats the default rules: a key as a bare JSON array element,
+        # with `--key` on the preceding line, has no adjacent assignment for
+        # gitleaks to anchor on. It is gitignored; if it is ever tracked, that
+        # is the finding.
+        run: |
+          set -euo pipefail
+          if git ls-files --error-unmatch config.json >/dev/null 2>&1; then
+            echo "::error::config.json is tracked. It holds MCP server credentials and must stay gitignored."
+            exit 1
+          fi
+
+      - name: Reject a silently widened allowlist
+        # .gitleaksignore is read from the branch under test, so a pull request
+        # can suppress its own finding by appending that finding's fingerprint.
+        # That is a decision for a reviewer to take deliberately on main, not
+        # something to carry in with the change it excuses.
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git fetch --quiet --depth=1 origin "${{ github.base_ref }}"
+          if ! git cat-file -e FETCH_HEAD:.gitleaksignore 2>/dev/null; then
+            # Bootstrap: the base branch predates the file. True exactly once,
+            # for the pull request that introduces it; self-healing after merge.
+            echo "::notice::.gitleaksignore does not exist on ${{ github.base_ref }} yet; skipping the change guard."
+            exit 0
+          fi
+          if ! git diff --quiet FETCH_HEAD...HEAD -- .gitleaksignore; then
+            echo "::error::This pull request modifies .gitleaksignore. Land that change separately."
+            exit 1
+          fi
 
       - name: Scan history for secrets
+        # --ignore-gitleaks-allow: a trailing `# gitleaks:allow` comment
+        #   otherwise suppresses a finding in the same commit that introduces
+        #   it. Reproduced, same key, exit 0 without this flag and exit 1 with
+        #   it. The escape hatch stays available in the pre-commit hook, where
+        #   a human is looking at the result.
+        # --max-decode-depth: catches a secret that arrives base64-encoded,
+        #   which the default depth of 0 does not look for at all.
         # Known historical findings are listed, with justification, in
         # .gitleaksignore. Anything else fails the build.
-        run: gitleaks git . --no-banner --redact --verbose
+        run: |
+          gitleaks git . --no-banner --redact --verbose \
+            --ignore-gitleaks-allow \
+            --max-decode-depth 2
 
   docker:
     runs-on: ubuntu-latest

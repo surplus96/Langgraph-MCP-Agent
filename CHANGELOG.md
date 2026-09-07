@@ -14,6 +14,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   version and checksum. gitleaks was previously listed in
   `.pre-commit-config.yaml` only, which CI never invokes — so no automated
   secret scan actually ran on the repository.
+- Guards making that scan non-optional from inside the branch it scans. Three
+  bypasses were reproduced against this repository and closed: an in-tree
+  `.gitleaks.toml` with an `.*` allowlist, a `# gitleaks:allow` comment in the
+  same commit as the secret, and appending a finding's own fingerprint to
+  `.gitleaksignore`. CI additionally fails if `config.json` is ever tracked —
+  its shape (a key as a bare JSON array element) defeats the default rules.
+- `permissions: contents: read` on the CI workflow. Every job executes
+  repository-controlled code and none of them write anything back.
 
 ---
 

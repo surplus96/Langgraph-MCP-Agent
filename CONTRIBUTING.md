@@ -145,7 +145,15 @@ how you got it.
 `config.json`, `.env` and `data/` are gitignored, and gitleaks runs both
 pre-commit and in CI. If gitleaks flags your commit, fix the commit — do not add
 a fingerprint to `.gitleaksignore`. That file is only for historical findings
-that have already been rotated, and each entry has to say so.
+that have already been rotated, and each entry has to say so; CI fails a pull
+request that touches it.
+
+Three ways to switch the scan off were reproduced and then closed, so do not
+expect them to work: CI refuses to run at all if a `.gitleaks.toml` exists in
+the repository, it passes `--ignore-gitleaks-allow` so a `# gitleaks:allow`
+comment has no effect there, and it fails if `config.json` is ever tracked. The
+`# gitleaks:allow` hatch does still work in the pre-commit hook, where you are
+looking at the result — use it there if you must, and expect CI to disagree.
 
 Never weaken the `${VAR:?message}` guards in `dockers/docker-compose.yaml` to
 quiet a scanner. See [SECURITY.md](SECURITY.md).
