@@ -1,0 +1,13 @@
+# Findings gitleaks should stop reporting, one fingerprint per line.
+#
+# Only historical findings belong here. A finding in current code is a bug to
+# fix, not a line to add — and anything listed here must already have been
+# rotated, because the secret stays readable in the history forever.
+
+# An OpenAI key committed to dockers/.env.example on 2025-07-08, before this
+# modernization. The key was revoked on 2025-09-04, along with the LangSmith
+# key from the same file. History is deliberately not rewritten: this is a
+# public repository with forks and clones, so a purge would not recall the
+# secret and would break every existing checkout. Revocation is what made it
+# harmless; this line is what keeps CI honest about everything else.
+5cd21de1cb3082fde487b65363683056f78a2ee5:dockers/.env.example:generic-api-key:2

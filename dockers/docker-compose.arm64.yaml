@@ -1,0 +1,8 @@
+# Apple Silicon / arm64 overlay.
+#   docker compose -f docker-compose.yaml -f docker-compose.arm64.yaml up -d
+services:
+  app:
+    platform: linux/arm64
+    environment:
+      - NODE_OPTIONS=--max_old_space_size=2048
+      - PYTHONMALLOC=malloc
