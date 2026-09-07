@@ -143,10 +143,39 @@ registry model.
 
 ## Phase 4 — Pipeline optimization
 
-**Status: items 1-5 landed 2026-09-04.** Caching middleware, token accounting,
-effort control, timeout with partial-output preservation, and multi-block
-streaming are in. Items 6-9 remain; 4.7 (MCP session reuse) is blocked on
-measurement.
+**Status: items 1-9 landed.** Caching middleware, token accounting, effort
+control, timeout with partial-output preservation, multi-block streaming,
+cached tool discovery, long-lived MCP sessions, and history summarization are
+all in. Only the durable checkpointer (4.8) is outstanding, and it is a
+judgement call rather than a gap — see below.
+
+### Measured: MCP session reuse (4.7)
+
+The adapter opens a session per tool call. Both server kinds were measured, so
+the decision rests on numbers rather than on the docstring.
+
+| Server | per-call | held session | gain |
+|---|---|---|---|
+| Local Python (`examples/mcp_server_time.py`) | 610 ms | 10.5 ms | **58x** |
+| `npx` (`@modelcontextprotocol/server-memory`, warm cache) | 770 ms | 2.4 ms | **319x** |
+
+A twelve-call turn went from 7.4 s to 0.13 s locally, and from 9.2 s to 0.03 s
+on the npx server. Cold npx cache adds a one-off ~2.4 s to the first
+`get_tools()`; after that the cache is warm and the per-call cost does not
+improve, because the cost is process startup rather than download.
+
+The npx case is the larger win and the more realistic one — the servers people
+actually configure are npm packages. It is also the case that made the old
+behaviour unusable: 9.2 s of overhead per turn against a 120 s default timeout.
+
+### Not done: durable checkpointer (4.8)
+
+`InMemorySaver` is now process-scoped, so the original bug — conversation state
+silently discarded on every "Apply Settings" — is fixed. Moving to
+`langgraph-checkpoint-sqlite` would additionally survive a process restart, at
+the cost of another dependency and a file to manage. For a local Streamlit app
+that is a judgement call, not an outstanding defect. Revisit if the app is ever
+deployed somewhere restarts matter.
 
 Ordered by value. Requires Phase 1; step 4.2 should follow Phase 3.6.
 
