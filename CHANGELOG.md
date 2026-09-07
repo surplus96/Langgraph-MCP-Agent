@@ -8,6 +8,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Conversations survive a restart.** `InMemorySaver` is replaced by SQLite
+  (`CHECKPOINT_DB_PATH`, default `data/checkpoints.db` — the volume that already
+  holds `config.json`). Two things had to come with it or the feature would only
+  have looked real: the thread id now lives in the URL, because a checkpoint
+  keyed by a UUID generated fresh on every browser session is written and then
+  never asked for again; and the transcript is re-read on load, because the
+  checkpointer restores what the *model* remembers while the messages the *user*
+  sees are Streamlit session state and are gone. A side effect worth having:
+  each browser tab gets its own conversation, and a conversation can be
+  bookmarked. An unwritable path falls back to memory with a warning rather than
+  failing the app.
+- **Reset Conversation now deletes the conversation it abandons.** Rotating the
+  thread id and walking away cost nothing while the store was in memory. Against
+  a durable one it leaves rows the application offers no way to reach or remove.
+  The button's tooltip says the deletion is permanent, since it also destroys a
+  bookmarked link. Tidying up can never raise — a failure there must not leave
+  someone stuck in the conversation they asked to leave.
+
 - `docs/ARCHITECTURE.md`, `docs/MCP_TOOLS.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `CLAUDE.md` and this changelog.
 - A `secrets` job in CI running gitleaks over the full commit history, pinned by
@@ -146,7 +164,7 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 
 ### Added
 
-- 125 tests, none requiring a network or an API key, including
+- 150 tests, none requiring a network or an API key, including
   `AppTest`-driven smoke tests and lifecycle tests for the session pool.
 - `dockers/Dockerfile` and a consolidated `docker-compose.yaml`. The compose
   file previously referenced a `build:` target that did not exist.

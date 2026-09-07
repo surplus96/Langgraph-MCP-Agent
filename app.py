@@ -62,10 +62,45 @@ def get_checkpointer():
 
     Building it inside session initialization meant every "Apply Settings" click
     silently discarded conversation state while the UI still showed the history.
-    """
-    from langgraph.checkpoint.memory import InMemorySaver
 
-    return InMemorySaver()
+    Opened on the background loop because the SQLite connection belongs to
+    whichever loop created it.
+    """
+    from mcp_agent.checkpoints import open_checkpointer
+
+    return run_sync(open_checkpointer(), timeout=30)
+
+
+def restore_thread() -> None:
+    """Pin this browser session to a conversation that outlives the process.
+
+    The thread id lives in the URL. That is what makes the durable checkpointer
+    worth having: a checkpoint keyed by a UUID generated fresh on every session
+    would be unreachable after a restart, so the data would be written and never
+    read. In the URL it survives a reload, can be bookmarked, and gives each
+    browser tab its own conversation for free.
+
+    The transcript is reloaded alongside it. The checkpointer restores what the
+    model remembers; the messages the user sees are Streamlit session state and
+    are gone. Restoring one without the other comes back to a blank page and an
+    agent that silently recalls everything.
+    """
+    stored = st.query_params.get("thread")
+    if not stored:
+        st.query_params["thread"] = state.thread_id
+        return
+
+    if stored == state.thread_id:
+        return
+
+    state.thread_id = stored
+    if not state.history:
+        from mcp_agent.checkpoints import load_history
+
+        try:
+            state.history = run_sync(load_history(get_checkpointer(), stored), timeout=30)
+        except Exception:
+            logger.exception("Could not restore the transcript for thread %s", stored)
 
 
 # --- Login gate ---------------------------------------------------------------
@@ -107,6 +142,15 @@ if login_required and not state.authenticated:
                 logger.error("Login gate misconfigured: %s", exc)
                 st.error(f"⚠️ {exc}")
     st.stop()
+
+
+# --- Conversation identity ----------------------------------------------------
+#
+# After the login gate, deliberately: restoring a stored transcript is reading
+# conversation content, which an unauthenticated visitor must not be able to
+# trigger by putting a thread id in the URL.
+
+restore_thread()
 
 
 # --- Header -------------------------------------------------------------------
@@ -416,8 +460,26 @@ with st.sidebar:
     st.divider()
     st.subheader("🔄 Actions")
 
-    if st.button("Reset Conversation", use_container_width=True, type="primary"):
+    if st.button(
+        "Reset Conversation",
+        use_container_width=True,
+        type="primary",
+        help=(
+            "Starts a new conversation and deletes this one from storage. "
+            "It cannot be recovered, including from a bookmarked link."
+        ),
+    ):
+        from mcp_agent.checkpoints import delete_thread
+
+        abandoned = state.thread_id
         state.reset_conversation()
+        # The id in the URL has to move too. Leaving it would send the next
+        # reload straight back into the conversation just abandoned.
+        st.query_params["thread"] = state.thread_id
+        # Deleted after rotating, and never allowed to raise: if the tidy-up
+        # fails, the user is still in the new conversation they asked for
+        # rather than stuck in the one they wanted to leave.
+        run_sync(delete_thread(get_checkpointer(), abandoned), timeout=30)
         st.rerun()
 
     if login_required and state.authenticated:
