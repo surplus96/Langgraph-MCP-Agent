@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from mcp_agent import auth  # noqa: E402
-from mcp_agent.agent import QueryResult, build_agent, run_query  # noqa: E402
+from mcp_agent.agent import build_agent, discover_tools, run_query  # noqa: E402
 from mcp_agent.config import (  # noqa: E402
     ConfigError,
     allowed_commands,
@@ -54,6 +54,18 @@ logger = logging.getLogger(__name__)
 TOOL_EDITING_ENABLED = os.environ.get("MCP_ALLOW_TOOL_EDIT", "false").strip().lower() == "true"
 
 state: AppState = AppState.get()
+
+
+@st.cache_resource(show_spinner=False)
+def load_tools(config_json: str) -> list:
+    """Discover MCP tools, cached on the configuration that produced them.
+
+    Keyed on the serialised config rather than the dict, because Streamlit's
+    cache needs a hashable key. Changing the model or the effort level also
+    routes through "Apply Settings", and without this each of those would pay
+    the ~580 ms discovery cost again for a tool set that has not changed.
+    """
+    return run_sync(discover_tools(json.loads(config_json)), timeout=120)
 
 
 @st.cache_resource
@@ -199,10 +211,11 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
     """Connect to MCP servers and build the agent. Returns success."""
     try:
         with st.spinner("🔄 Connecting to MCP server..."):
+            tools = load_tools(json.dumps(mcp_config, sort_keys=True))
             bundle = run_sync(
                 build_agent(
                     state.selected_model,
-                    mcp_config,
+                    tools,
                     get_checkpointer(),
                     effort=state.selected_effort,
                 ),
@@ -418,20 +431,21 @@ if user_query:
             text_placeholder = st.empty()
             renderer = StreamlitRenderer(text_placeholder, tool_placeholder)
 
-            try:
-                result = run_sync(
-                    run_query(
-                        state.agent,
-                        user_query,
-                        renderer,
-                        thread_id=state.thread_id,
-                        recursion_limit=state.recursion_limit,
-                    ),
-                    timeout=state.timeout_seconds,
-                )
-            except TimeoutError:
-                logger.warning("Query exceeded %ss", state.timeout_seconds)
-                result = QueryResult(error=f"⏱️ Request exceeded {state.timeout_seconds} seconds.")
+            # run_query applies the timeout itself and returns the text and
+            # tokens it managed to produce. Cancelling from out here instead
+            # would strand both inside its frame — which is what this code
+            # used to do, discarding exactly the longest, most expensive turns.
+            result = run_sync(
+                run_query(
+                    state.agent,
+                    user_query,
+                    renderer,
+                    thread_id=state.thread_id,
+                    recursion_limit=state.recursion_limit,
+                    timeout_seconds=state.timeout_seconds,
+                ),
+                timeout=state.timeout_seconds + 30,
+            )
 
         state.usage = state.usage + result.usage
         state.history.append({"role": "user", "content": user_query})

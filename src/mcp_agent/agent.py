@@ -220,24 +220,34 @@ class AgentBundle:
     estimated_prefix_tokens: int
 
 
-async def build_agent(
-    model_id: str,
-    mcp_config: dict[str, Any],
-    checkpointer: InMemorySaver,
-    effort: Effort = DEFAULT_EFFORT,
-) -> AgentBundle:
-    """Connect to the configured MCP servers and build the ReAct agent."""
-    from langchain.agents import create_agent
-    from langchain.agents.middleware import SummarizationMiddleware
-    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+async def discover_tools(mcp_config: dict[str, Any]) -> list[Any]:
+    """Connect to the configured MCP servers and list their tools.
+
+    Measured at roughly 580 ms per call and it does not warm up — the adapter
+    starts a fresh server process each time — so the caller should cache this
+    on the configuration rather than re-running it whenever an unrelated
+    setting changes.
+    """
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
     client = MultiServerMCPClient(mcp_config)
     tools = await client.get_tools()
 
     # Deterministic ordering keeps the tool-definition block byte-stable across
-    # turns, which is a prerequisite for prompt caching later.
-    tools = sorted(tools, key=lambda tool: tool.name)
+    # turns, which is what makes the cached prefix reusable.
+    return sorted(tools, key=lambda tool: tool.name)
+
+
+async def build_agent(
+    model_id: str,
+    tools: list[Any],
+    checkpointer: InMemorySaver,
+    effort: Effort = DEFAULT_EFFORT,
+) -> AgentBundle:
+    """Build the ReAct agent over already-discovered tools."""
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import SummarizationMiddleware
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
     spec = MODEL_REGISTRY[model_id]
     model = build_model(model_id, effort)

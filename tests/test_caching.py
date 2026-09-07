@@ -256,18 +256,10 @@ def test_build_agent_attaches_the_caching_middleware(monkeypatch):
         captured.update(kwargs)
         return "compiled-agent"
 
-    class FakeClient:
-        def __init__(self, config):
-            pass
-
-        async def get_tools(self):
-            return [beta, alpha]  # deliberately unsorted
-
     monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
-    monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
-    bundle = asyncio.run(agent_module.build_agent("claude-opus-5", {}, None))
+    bundle = asyncio.run(agent_module.build_agent("claude-opus-5", [alpha, beta], None))
 
     middleware = captured.get("middleware") or []
     assert any(isinstance(m, AnthropicPromptCachingMiddleware) for m in middleware), (
@@ -277,31 +269,27 @@ def test_build_agent_attaches_the_caching_middleware(monkeypatch):
     assert bundle.estimated_prefix_tokens > 0
 
 
-def test_build_agent_sorts_tools_for_a_stable_cache_prefix(monkeypatch):
-    """Tool order is part of the cached prefix; an unstable order misses."""
+def test_discover_tools_sorts_for_a_stable_cache_prefix(monkeypatch):
+    """Tool order is part of the cached prefix; an unstable order misses.
+
+    Sorting moved to discover_tools when discovery was split out so the caller
+    could cache it — the ~580 ms cost does not warm up on its own.
+    """
     import asyncio
 
-    from mcp_agent import agent as agent_module
-
-    captured: dict = {}
-
-    def fake_create_agent(model, tools, **kwargs):
-        captured["tools"] = tools
-        return "compiled-agent"
+    from mcp_agent.agent import discover_tools
 
     class FakeClient:
         def __init__(self, config):
             pass
 
         async def get_tools(self):
-            return [beta, alpha]
+            return [beta, alpha]  # deliberately unsorted
 
-    monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
     monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
-    asyncio.run(agent_module.build_agent("claude-opus-5", {}, None))
-    assert [t.name for t in captured["tools"]] == ["alpha", "beta"]
+    tools = asyncio.run(discover_tools({}))
+    assert [t.name for t in tools] == ["alpha", "beta"]
 
 
 def test_ttl_falls_back_on_a_bad_value(monkeypatch):
@@ -327,18 +315,10 @@ def test_summarization_and_caching_are_both_attached(monkeypatch):
         captured.update(kwargs)
         return "compiled-agent"
 
-    class FakeClient:
-        def __init__(self, config):
-            pass
-
-        async def get_tools(self):
-            return [alpha]
-
     monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
-    monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
-    asyncio.run(agent_module.build_agent("claude-opus-5", {}, None))
+    asyncio.run(agent_module.build_agent("claude-opus-5", [alpha], None))
 
     kinds = {type(m) for m in captured.get("middleware") or []}
     assert AnthropicPromptCachingMiddleware in kinds
