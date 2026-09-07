@@ -391,6 +391,30 @@ def test_the_tool_name_is_kept_whole_when_the_prefix_will_not_fit():
     assert len(namespaced("a" * 40, tool)) <= 64
 
 
+def test_a_tool_name_longer_than_the_limit_is_cut_too():
+    """The prefix giving way is not enough when the tool name alone is over.
+
+    Nothing of the prefix fits here, so the last thing standing between the
+    server and a rejected request is the cap on the tool name itself.
+    """
+    from mcp_agent.sessions import namespaced
+
+    assert namespaced("server", "t" * 80) == "t" * 64
+
+
+def test_truncating_the_prefix_does_not_leave_a_trailing_underscore():
+    """Truncation is the one step that can create one, so it strips after.
+
+    A prefix cut mid-word at an underscore would otherwise join as `a__tool`,
+    which is legal but reads as a mistake and is not the name anything else
+    would predict.
+    """
+    from mcp_agent.sessions import namespaced
+
+    tool = "t" * 50  # leaves room for 13 characters of prefix
+    assert namespaced("a" * 12 + "_" + "b" * 30, tool) == "a" * 12 + "_" + tool
+
+
 def test_a_tool_name_the_api_would_reject_is_also_cleaned():
     """The name comes from the server, which is no more trusted than the config."""
     from mcp_agent.sessions import namespaced

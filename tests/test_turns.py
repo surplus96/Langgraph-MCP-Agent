@@ -380,6 +380,62 @@ def test_the_turn_budget_reaches_the_agent():
     assert events and events[-1].payload == "Half past "
 
 
+def test_the_grace_period_lets_the_agent_report_its_own_timeout():
+    """What the grace is for, stated as the difference it makes.
+
+    `Turn`'s clock starts when it is constructed; `run_query`'s starts when the
+    loop gets round to running it. A loop that is busy at that moment — another
+    session's tool call, say — puts the whole gap between them. Without the
+    grace the two deadlines are nominally equal, so that gap makes `Turn` win:
+    the page gets "did not respond" and the streamed text and spent tokens are
+    thrown away, which is the one thing `run_query` owns its own timeout to
+    prevent.
+
+    The loop is blocked here *before* the turn starts, which is what makes the
+    gap deterministic rather than a race.
+    """
+    import asyncio
+    import time
+
+    from mcp_agent.runtime import get_loop
+
+    get_loop().call_soon_threadsafe(time.sleep, 1.0)
+
+    class LateAgent:
+        async def astream(self, inputs, config, stream_mode="messages"):
+            yield AIMessageChunk(content="Half past "), {"langgraph_node": "model"}
+            await asyncio.sleep(10)
+            yield AIMessageChunk(content="four."), {"langgraph_node": "model"}
+
+    _, result = _drive(LateAgent(), timeout_seconds=0.2, grace_seconds=3.0)
+
+    assert result.text == "Half past ", result
+    assert result.error and "exceeded" in result.error, result
+
+
+def test_an_outcome_once_read_does_not_change_underneath():
+    """Reading `result` first cancels the future; iterating must not re-read it.
+
+    `app.py` always iterates before touching `result`, so this is latent — but
+    an unconditional collect at the end of iteration replaces a reported
+    timeout with `CancelledError: `, which is the shape of empty, reasonless
+    error the whole module exists to have stopped producing.
+    """
+    import time
+
+    class BlockingAgent:
+        async def astream(self, inputs, config, stream_mode="messages"):
+            time.sleep(1.0)  # noqa: ASYNC251 — blocking the loop is the point
+            yield AIMessageChunk(content="too late"), {"langgraph_node": "model"}
+
+    turn = _turn(BlockingAgent(), timeout_seconds=0.05, grace_seconds=0.05)
+    first = turn.result
+    assert first.error and "did not respond" in first.error
+
+    list(turn)
+    assert turn.result.error == first.error
+
+
 def test_collecting_the_result_waits_only_what_is_left():
     """Iteration has already spent the deadline; waiting it again doubles it.
 

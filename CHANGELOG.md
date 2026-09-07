@@ -49,7 +49,21 @@ release.
   the guarantee it documented — that a stuck loop cannot hold the browser —
   did not hold. Measured, not read: a stub that blocks the loop thread hung the
   turn indefinitely. Iteration now consults it, and the collect waits out only
-  what is left of it. Never released.
+  what is left of it. A second pass found the first fix incomplete: the check
+  sat in the "event queue is empty" branch, so a stream that keeps producing
+  was still unbounded — 3.05s of events against a 0.10s deadline. It is now
+  checked before the wait as well. Never released.
+- **`Turn` was free to stop forwarding the turn budget** to `run_query`, with
+  every test green. That timeout exists so a turn cut short still reports its
+  partial text and spent tokens; without it the only remaining bound reports
+  "did not respond" and discards both. Never released.
+- **A collision report named the wrong thing to fix.** Two configuration keys
+  that shorten to the same tool prefix were reported as "rename them at the
+  server", which is not where the problem is, and the failure's `server_name`
+  was filled with the *tool's* name, so the sidebar labelled a tool as a
+  server. It now tracks which servers produced each name and gives the remedy
+  that matches — including for a server whose tool names are entirely outside
+  `[a-zA-Z0-9_-]` and therefore all clean to the same string. Never released.
 - **A turn that produced nothing was reported as success**, appending an empty
   assistant bubble. The changelog has claimed since 0.3.0 that this was fixed;
   it was not.
@@ -65,9 +79,17 @@ release.
   turn ends in `st.rerun()`, so every assertion read a page rebuilt from the
   transcript rather than from the events. Deleting the streaming loop from
   `app.py` left the whole suite green. The file now also drives `Turn`
-  directly, and the two mutations that mattered most — the deleted loop, and
-  a `thread_id` hard-wired so every conversation shares one checkpoint — are
-  both red.
+  directly.
+
+  A second pass over *that* found 24 of 48 still surviving — the same hole one
+  level up, since `app.py` was held by a single spy watching iteration and
+  nothing else. Both rounds of survivors are now dead, checked one mutant at a
+  time.
+- `tests/test_rendering.py`, and `mcp_agent/rendering.py` for it to test.
+  `draw` moved out of `app.py` because nothing could reach it there: every one
+  of its branches could be broken with the suite green, including sending
+  untrusted tool output through `st.markdown`, which is the markdown escape the
+  comment beside it exists to prevent.
 
 ---
 

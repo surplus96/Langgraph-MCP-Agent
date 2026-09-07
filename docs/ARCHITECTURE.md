@@ -31,6 +31,7 @@ src/mcp_agent/             The application. No Streamlit import below this line
   ├── usage.py             Token accounting.
   ├── checkpoints.py       Conversation state that outlives the process.
   ├── turns.py             One turn, run on the loop, drawn on the caller's thread.
+  ├── rendering.py         Which pane a streamed event is drawn into, and with what.
   ├── streaming.py         Graph stream → callback.
   ├── runtime.py           The one background event loop.
   ├── auth.py              The login gate.
@@ -202,11 +203,19 @@ accumulated text or tool log rather than a delta, so the earlier ones are
 redundant.
 
 Iteration ends when the turn finishes **or** when the deadline
-(`timeout_seconds` plus a 30s grace) passes. Both checks matter: the script
-thread sits inside that loop, so ending only on the future would mean a loop
-that stops answering holds the browser open indefinitely. Under the grace it is
-`run_query`'s own timeout that fires, which is what keeps a cut-short turn
-reporting its partial text and spent tokens.
+(`timeout_seconds` plus a 30s grace) passes, and the deadline is checked
+*before* the wait as well as after it. Both matter, and each was found by
+mutation rather than by reading: the script thread sits inside that loop, so
+ending only on the future means a loop that stops answering holds the browser
+indefinitely — and checking only when the event queue runs dry leaves a stream
+that keeps producing unbounded, measured at 3.05s of events against a 0.10s
+deadline.
+
+The grace is what makes the two deadlines ordered rather than simultaneous.
+`Turn`'s clock starts at construction; `run_query`'s starts when the loop gets
+round to it, and a busy loop puts the whole gap between them. Without the
+grace, `Turn` wins that race and the page gets "did not respond" instead of the
+partial text and spent tokens `run_query` owns its timeout to preserve.
 
 ### Streaming and the timeout
 
@@ -350,13 +359,18 @@ user submits a prompt in app.py
 
 ## Testing
 
-187 tests, none of which need a network or an API key. The parts that matter:
+211 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache
   is *hit* still needs a live call; the sidebar reports that.
 - **`test_sessions.py`** covers the lifecycle, including a killed server.
 - **`test_app_smoke.py`** runs the actual script through `AppTest`.
+- **`test_rendering.py`** covers `draw`, which is why `draw` is here rather than
+  in `app.py`. Anything driving the script sees the page *after* `st.rerun()`,
+  rebuilt from the transcript, so every branch of it was free: tool output could
+  go through `st.markdown` — the markdown escape it exists to prevent — with the
+  whole suite green.
 
 The standard applied here is **mutation**: a test suite is only trusted once
 breaking the code has been shown to break the suite. Deleting the caching

@@ -90,7 +90,10 @@ def namespaced(server_name: str, tool_name: str) -> str:
     tool = _UNSAFE_IN_TOOL_NAME.sub("_", tool_name).strip("_") or "tool"
     tool = tool[:MAX_TOOL_NAME_LENGTH]
 
-    prefix = _UNSAFE_IN_TOOL_NAME.sub("_", server_name).strip("_")
+    # One strip, after the truncation rather than before it: stripping first is
+    # redundant with this, and truncation is the only step that can *create* a
+    # trailing underscore.
+    prefix = _UNSAFE_IN_TOOL_NAME.sub("_", server_name)
     room = MAX_TOOL_NAME_LENGTH - len(tool) - 1
     prefix = prefix[:room].strip("_") if room > 0 else ""
     return f"{prefix}_{tool}" if prefix else tool
