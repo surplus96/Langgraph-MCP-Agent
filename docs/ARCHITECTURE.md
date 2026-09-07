@@ -30,6 +30,7 @@ src/mcp_agent/             The application. No Streamlit import below this line
   ├── config.py            Load, validate and persist the MCP server config.
   ├── usage.py             Token accounting.
   ├── checkpoints.py       Conversation state that outlives the process.
+  ├── turns.py             One turn, run on the loop, drawn on the caller's thread.
   ├── streaming.py         Graph stream → callback.
   ├── runtime.py           The one background event loop.
   ├── auth.py              The login gate.
@@ -110,6 +111,17 @@ everything looking healthy until something calls a tool — and the raw failure
 that then reaches the model is `ClosedResourceError` with an empty message.
 Both defects were found by killing a real server, not by reading the code.
 
+`_guard()` also bounds each call (`MCP_TOOL_TIMEOUT`, default 60s). `run_query`
+bounds the *turn*; if that deadline lands mid-call, the model node is
+checkpointed with `tool_calls` and no `ToolMessage` follows — a sequence
+Anthropic rejects, rebuilt by every later turn on that thread. Bounding the
+call keeps the pair complete, because `ToolException` becomes an ordinary tool
+result. Set the value below the turn budget or the original failure returns.
+
+Tool names are namespaced by server. Without that, two servers exposing
+`search` collide and `create_agent` binds only one — verified: three tools in,
+two bound, with the sidebar still reporting three.
+
 `_guard()` wraps every async tool at the one place the failure is observable
 (a tool with no `coroutine` is returned untouched rather than half-wrapped). It
 distinguishes transport death from an ordinary tool error by walking the `raise
@@ -158,6 +170,26 @@ Nothing in the API reports this. `AgentBundle.estimated_prefix_tokens` and
 below this model's floor" instead of showing an unexplained 0% hit rate. The
 estimate is deliberately conservative — an exact count needs the
 `count_tokens` endpoint, and a warning is cheaper than a silent no-op.
+
+### Streaming across the thread boundary
+
+The agent runs on the background loop; Streamlit only allows drawing from its
+script thread. Marshalling the whole turn to the loop — renderer included —
+means every `st.markdown` runs where Streamlit raises `NoSessionContext`, and
+`run_query` catches it like any other failure. That exception carries no
+message, so the symptom was a turn dying at its first chunk with an error whose
+reason was blank. It shipped in 0.3.0 and survived until a test finally drove a
+chat turn.
+
+`turns.py` moves events across as data: `Turn` runs the coroutine on the loop
+and hands `TurnEvent`s to whichever thread iterates it. Attaching a script-run
+context to the loop thread is the tempting one-liner and is worse — that thread
+is process-wide, so writes would land in whichever browser session attached
+last.
+
+Queued events are coalesced to the last of each kind. Each carries the full
+accumulated text or tool log rather than a delta, so the earlier ones are
+redundant.
 
 ### Streaming and the timeout
 
@@ -301,7 +333,7 @@ user submits a prompt in app.py
 
 ## Testing
 
-150 tests, none of which need a network or an API key. The parts that matter:
+166 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache

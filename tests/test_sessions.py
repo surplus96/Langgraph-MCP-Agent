@@ -54,7 +54,7 @@ async def _clean(monkeypatch):
     FakeClient.opened = FakeClient.closed = 0
     monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
 
-    async def fake_load(session, server_name=None):
+    async def fake_load(session, server_name=None, **kwargs):
         return [beta, alpha]  # deliberately unsorted
 
     monkeypatch.setattr("langchain_mcp_adapters.tools.load_mcp_tools", fake_load)
@@ -102,7 +102,7 @@ async def test_closing_twice_is_harmless():
 async def test_a_server_that_fails_to_start_does_not_take_the_others_with_it(
     monkeypatch,
 ):
-    async def selective(session, server_name=None):
+    async def selective(session, server_name=None, **kwargs):
         if server_name == "broken":
             raise RuntimeError("could not launch")
         return [alpha]
@@ -131,7 +131,7 @@ async def test_a_dead_session_reports_something_a_person_can_act_on(monkeypatch)
     async def dies(*args, **kwargs):
         raise ClosedResourceError()
 
-    async def fake_load(session, server_name=None):
+    async def fake_load(session, server_name=None, **kwargs):
         broken = alpha.model_copy()
         broken.coroutine = dies
         return [broken]
@@ -152,7 +152,7 @@ async def test_a_dead_session_is_recorded_once_not_per_call(monkeypatch):
     async def dies(*args, **kwargs):
         raise ClosedResourceError()
 
-    async def fake_load(session, server_name=None):
+    async def fake_load(session, server_name=None, **kwargs):
         broken = alpha.model_copy()
         broken.coroutine = dies
         return [broken]
@@ -172,7 +172,7 @@ async def test_an_ordinary_tool_error_is_not_mistaken_for_a_dead_session(monkeyp
     async def raises(*args, **kwargs):
         raise ValueError("the tool itself rejected the input")
 
-    async def fake_load(session, server_name=None):
+    async def fake_load(session, server_name=None, **kwargs):
         failing = alpha.model_copy()
         failing.coroutine = raises
         return [failing]
@@ -279,3 +279,52 @@ def test_an_ordinary_tool_failure_still_propagates(monkeypatch):
 
     with pytest.raises(ValueError, match="does not exist"):
         asyncio.run(_guarded(explodes).coroutine())
+
+
+# --- Tool names across servers ------------------------------------------------
+
+
+async def test_tool_names_are_namespaced_by_server(monkeypatch):
+    """Without the prefix two servers exposing `search` collide.
+
+    Verified against the real `create_agent`: three tools in, two bound, and
+    the loser never reaches the model while the sidebar still counts it. The
+    fake loader here cannot reproduce that, so what this pins is that the
+    request for prefixing is actually made.
+    """
+    seen: dict = {}
+
+    async def capturing(session, server_name=None, **kwargs):
+        seen.update(kwargs)
+        return [alpha]
+
+    monkeypatch.setattr("langchain_mcp_adapters.tools.load_mcp_tools", capturing)
+
+    await open_pool({"github": {}})
+    assert seen.get("tool_name_prefix") is True
+
+
+async def test_tools_that_still_collide_are_reported(monkeypatch):
+    """Prefixing makes this unreachable normally; silence would not be.
+
+    `create_agent` binds one of a duplicated name and drops the rest, so a
+    collision that survives prefixing costs the user a tool the sidebar says
+    they have, with nothing said about it.
+    """
+
+    async def colliding(session, server_name=None, **kwargs):
+        first = alpha.model_copy()
+        second = alpha.model_copy()
+        return [first, second]
+
+    monkeypatch.setattr("langchain_mcp_adapters.tools.load_mcp_tools", colliding)
+
+    pool = await open_pool({"one": {}})
+    assert pool.healthy is False
+    assert any("named 'alpha'" in failure.error for failure in pool.failures), pool.failures
+
+
+async def test_distinct_tool_names_are_not_reported(monkeypatch):
+    pool = await open_pool({"a": {}})
+    assert pool.healthy is True
+    assert pool.failures == []

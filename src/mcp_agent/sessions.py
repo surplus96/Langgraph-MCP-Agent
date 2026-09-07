@@ -142,6 +142,34 @@ class SessionPool:
         # Deterministic order keeps the tool-definition block byte-stable, which
         # is what makes the cached prompt prefix reusable across turns.
         self.tools = sorted(collected, key=lambda tool: tool.name)
+        self._warn_about_duplicates()
+
+    def _warn_about_duplicates(self) -> None:
+        """Say so if two tools still share a name.
+
+        Server prefixes make this unreachable for ordinary configurations, but
+        a server whose own tool names already carry another server's prefix
+        would slip through, and the failure is silent: `create_agent` binds one
+        and drops the rest, so the model simply never sees a tool the sidebar
+        says it has.
+        """
+        seen: dict[str, int] = {}
+        for tool in self.tools:
+            seen[tool.name] = seen.get(tool.name, 0) + 1
+
+        for name, count in seen.items():
+            if count > 1:
+                logger.warning("%d tools are named %r; only one will reach the model", count, name)
+                self.failures.append(
+                    ServerFailure(
+                        server_name=name,
+                        error=(
+                            f"{count} registered tools are named {name!r}. Only one of "
+                            "them can be used; rename them at the server."
+                        ),
+                        at_startup=True,
+                    )
+                )
 
     async def _keep(
         self,
@@ -160,7 +188,14 @@ class SessionPool:
 
         try:
             async with client.session(server_name) as session:
-                tools = await load_mcp_tools(session, server_name=server_name)
+                # tool_name_prefix: without it two servers exposing `search`
+                # collide, and `create_agent` binds only the last one — the
+                # other never reaches the model while the sidebar still counts
+                # it. Verified: three tools in, two bound. Prefixing also gives
+                # the model a name that says which server a tool belongs to.
+                tools = await load_mcp_tools(
+                    session, server_name=server_name, tool_name_prefix=True
+                )
                 ready.set_result([self._guard(tool, server_name) for tool in tools])
                 await stop.wait()
         except asyncio.CancelledError:

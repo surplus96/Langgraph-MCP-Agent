@@ -10,6 +10,43 @@ Nothing yet.
 
 ---
 
+## [0.4.1] — 2026-09-07
+
+Three runtime defects, found by reviewing 0.4.0 against the plan for the next
+version. The first had broken every turn since 0.3.0.
+
+### Fixed
+
+- **Streamed output never reached the page.** `run_sync` marshalled the whole
+  turn to the background loop, renderer included, so every `st.markdown` ran on
+  a thread with no `ScriptRunContext` and Streamlit raised `NoSessionContext`.
+  `run_query` caught it like any other failure, and that exception carries no
+  message, so a turn died at its first chunk showing `Error during query
+  processing: ` with nothing after the colon. Events now cross the thread
+  boundary as data (`mcp_agent/turns.py`) and `app.py` draws them on the script
+  thread. Introduced in 0.3.0 when the background loop replaced `nest_asyncio`.
+- **A tool call running at the turn deadline made the conversation unusable.**
+  The model node was checkpointed with its `tool_calls` and no `ToolMessage`
+  followed — a sequence Anthropic rejects, rebuilt by every later turn on that
+  thread, escapable only by resetting. Tool calls are now bounded individually
+  (`MCP_TOOL_TIMEOUT`, default 60s) and a timeout becomes an ordinary tool
+  error the model can read.
+- **Two servers exposing the same tool name silently lost one.** Verified
+  against `create_agent`: three tools in, two bound, and the sidebar still
+  counted three. Tool names are namespaced by server, and a collision that
+  survives that is reported rather than dropped.
+- **A turn that produced nothing was reported as success**, appending an empty
+  assistant bubble. The changelog has claimed since 0.3.0 that this was fixed;
+  it was not.
+
+### Added
+
+- `tests/test_turns.py` — the first tests in this repository that drive a real
+  chat turn through the real script. Their absence is why a streaming path that
+  raised on every write shipped and stayed shipped.
+
+---
+
 ## [0.4.0] — 2026-09-07
 
 Conversations now outlive the process, and the secret scan CI never actually
@@ -218,6 +255,7 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 No changelog was kept. See the commit history from `5cd21de` (2025-07-08)
 onward.
 
-[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.4.0...main
+[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.4.1...main
+[0.4.1]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.1
 [0.4.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.0
 [0.3.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.3.0

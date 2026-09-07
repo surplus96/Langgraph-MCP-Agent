@@ -20,7 +20,7 @@ uv sync                                   # install, dev deps included
 uv run streamlit run app.py --server.port 8585
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src/mcp_agent app.py
-uv run pytest -q                          # 150 tests, no network, no API key
+uv run pytest -q                          # 166 tests, no network, no API key
 uv run python scripts/check_models.py     # verify the registry against the live API
 ```
 
