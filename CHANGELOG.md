@@ -12,8 +12,10 @@ Nothing yet.
 
 ## [0.4.1] — 2026-09-07
 
-Three runtime defects, found by reviewing 0.4.0 against the plan for the next
-version. The first had broken every turn since 0.3.0.
+Five runtime defects, found by reviewing 0.4.0 against the plan for the next
+version and then by mutating the fixes. The first had broken every turn since
+0.3.0; the last two were introduced by the fixes above them and caught before
+release.
 
 ### Fixed
 
@@ -35,6 +37,19 @@ version. The first had broken every turn since 0.3.0.
   against `create_agent`: three tools in, two bound, and the sidebar still
   counted three. Tool names are namespaced by server, and a collision that
   survives that is reported rather than dropped.
+- **The server prefix could produce a tool name the API rejects.** The first
+  cut of the namespacing above pasted the config key straight on. Anthropic
+  requires `^[a-zA-Z0-9_-]{1,64}$` and rejects the whole *request* when a name
+  fails it, so a Smithery-style key — `@smithery-ai/server-sequential-thinking`,
+  which `README.md` tells users to paste — would have failed every turn rather
+  than one tool. `namespaced()` now cleans the prefix and shortens it to fit,
+  keeping the tool's own name whole. Never released.
+- **`Turn`'s deadline was dead code.** It was consulted only when collecting
+  the result, which `app.py` reaches only after iteration has already ended, so
+  the guarantee it documented — that a stuck loop cannot hold the browser —
+  did not hold. Measured, not read: a stub that blocks the loop thread hung the
+  turn indefinitely. Iteration now consults it, and the collect waits out only
+  what is left of it. Never released.
 - **A turn that produced nothing was reported as success**, appending an empty
   assistant bubble. The changelog has claimed since 0.3.0 that this was fixed;
   it was not.
@@ -44,6 +59,15 @@ version. The first had broken every turn since 0.3.0.
 - `tests/test_turns.py` — the first tests in this repository that drive a real
   chat turn through the real script. Their absence is why a streaming path that
   raised on every write shipped and stayed shipped.
+
+  A mutation pass over the first version of that file found 18 of 24 mutations
+  surviving, all of them in the streaming path the release is named after: the
+  turn ends in `st.rerun()`, so every assertion read a page rebuilt from the
+  transcript rather than from the events. Deleting the streaming loop from
+  `app.py` left the whole suite green. The file now also drives `Turn`
+  directly, and the two mutations that mattered most — the deleted loop, and
+  a `thread_id` hard-wired so every conversation shares one checkpoint — are
+  both red.
 
 ---
 

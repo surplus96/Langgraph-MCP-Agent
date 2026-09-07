@@ -46,7 +46,16 @@ A JSON object mapping a server name to its definition:
 ```
 
 The server name is yours to choose. It appears in error messages and prefixes
-nothing else, so pick something you will recognise when it fails.
+every tool that server exposes — `time_get_current_time` — so pick something
+you will recognise both when it fails and when the model names a tool.
+
+Anything is accepted. Anthropic requires a tool name to match
+`^[a-zA-Z0-9_-]{1,64}$` and rejects the whole request, not the one tool, when
+it does not, so the prefix is cleaned before use: characters outside that set
+become `_`, and if the combined name would run past 64 characters the prefix
+gives way rather than the tool's own name. A Smithery key pasted verbatim
+(`@smithery-ai/server-sequential-thinking`) therefore works, but the name the
+model sees is not the one you wrote.
 
 ### Fields
 

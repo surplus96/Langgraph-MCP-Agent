@@ -122,6 +122,16 @@ Tool names are namespaced by server. Without that, two servers exposing
 `search` collide and `create_agent` binds only one — verified: three tools in,
 two bound, with the sidebar still reporting three.
 
+The prefix is built by `namespaced()` rather than by the adapter's
+`tool_name_prefix`, which pastes the config key on unchecked. Anthropic rejects
+a *request* whose tool names do not match `^[a-zA-Z0-9_-]{1,64}$`, and the key
+is whatever the user pasted — Smithery's own snippets use
+`@smithery-ai/server-sequential-thinking` — so one such entry would cost every
+turn rather than one tool. `namespaced()` cleans the prefix and drops as much
+of it as it must to fit, keeping the tool's own name whole because that is what
+the model reasons about. Only the LangChain-side name changes; the adapter
+closes over the MCP tool's real name for the call itself.
+
 `_guard()` wraps every async tool at the one place the failure is observable
 (a tool with no `coroutine` is returned untouched rather than half-wrapped). It
 distinguishes transport death from an ordinary tool error by walking the `raise
@@ -190,6 +200,13 @@ last.
 Queued events are coalesced to the last of each kind. Each carries the full
 accumulated text or tool log rather than a delta, so the earlier ones are
 redundant.
+
+Iteration ends when the turn finishes **or** when the deadline
+(`timeout_seconds` plus a 30s grace) passes. Both checks matter: the script
+thread sits inside that loop, so ending only on the future would mean a loop
+that stops answering holds the browser open indefinitely. Under the grace it is
+`run_query`'s own timeout that fires, which is what keeps a cut-short turn
+reporting its partial text and spent tokens.
 
 ### Streaming and the timeout
 
@@ -333,7 +350,7 @@ user submits a prompt in app.py
 
 ## Testing
 
-166 tests, none of which need a network or an API key. The parts that matter:
+187 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache

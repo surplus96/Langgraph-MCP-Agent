@@ -161,7 +161,7 @@ uv sync              # 개발 의존성 포함 설치
 uv run ruff check .  # 린트
 uv run ruff format . # 포매팅
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 166개 테스트
+uv run pytest -q     # 187개 테스트
 ```
 
 ## 사용법

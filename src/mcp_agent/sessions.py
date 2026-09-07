@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -66,6 +67,45 @@ def tool_timeout() -> float:
         logger.warning("MCP_TOOL_TIMEOUT=%r is not positive; using %s", raw, DEFAULT_TOOL_TIMEOUT)
         return DEFAULT_TOOL_TIMEOUT
     return value
+
+
+#: Anthropic rejects a *request* — not just the offending tool — whose tool
+#: names do not match ``^[a-zA-Z0-9_-]{1,64}$``. The prefix is built from a key
+#: in a config file the user pastes into, and Smithery's own snippets use keys
+#: like ``@smithery-ai/server-sequential-thinking``, so trusting it would turn
+#: one bad config entry into every turn failing. Made safe here instead.
+MAX_TOOL_NAME_LENGTH = 64
+_UNSAFE_IN_TOOL_NAME = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def namespaced(server_name: str, tool_name: str) -> str:
+    """``server_tool``, made safe to send and short enough to be accepted.
+
+    The tool's own name is kept whole and the server prefix gives way, because
+    the name is what the model reasons about; the prefix only disambiguates.
+    A prefix truncated to nothing, or two servers truncated to the same thing,
+    can still collide — :meth:`SessionPool._warn_about_duplicates` is what
+    says so.
+    """
+    tool = _UNSAFE_IN_TOOL_NAME.sub("_", tool_name).strip("_") or "tool"
+    tool = tool[:MAX_TOOL_NAME_LENGTH]
+
+    prefix = _UNSAFE_IN_TOOL_NAME.sub("_", server_name).strip("_")
+    room = MAX_TOOL_NAME_LENGTH - len(tool) - 1
+    prefix = prefix[:room].strip("_") if room > 0 else ""
+    return f"{prefix}_{tool}" if prefix else tool
+
+
+def _renamed(tool: BaseTool, name: str) -> BaseTool:
+    """A copy of ``tool`` under ``name``.
+
+    Only the LangChain-side name changes. The adapter closes over the MCP
+    tool's own name for the actual call, so renaming here is invisible to the
+    server and visible only to the model.
+    """
+    if tool.name == name:
+        return tool
+    return tool.model_copy(update={"name": name})
 
 
 def _is_session_failure(exc: BaseException) -> bool:
@@ -149,9 +189,10 @@ class SessionPool:
 
         Server prefixes make this unreachable for ordinary configurations, but
         a server whose own tool names already carry another server's prefix
-        would slip through, and the failure is silent: `create_agent` binds one
-        and drops the rest, so the model simply never sees a tool the sidebar
-        says it has.
+        would slip through, as would two long server names that `namespaced`
+        had to truncate to the same thing. The failure is silent: `create_agent`
+        binds one and drops the rest, so the model simply never sees a tool the
+        sidebar says it has.
         """
         seen: dict[str, int] = {}
         for tool in self.tools:
@@ -188,15 +229,21 @@ class SessionPool:
 
         try:
             async with client.session(server_name) as session:
-                # tool_name_prefix: without it two servers exposing `search`
-                # collide, and `create_agent` binds only the last one — the
-                # other never reaches the model while the sidebar still counts
-                # it. Verified: three tools in, two bound. Prefixing also gives
-                # the model a name that says which server a tool belongs to.
-                tools = await load_mcp_tools(
-                    session, server_name=server_name, tool_name_prefix=True
+                # Namespacing: without it two servers exposing `search` collide,
+                # and `create_agent` binds only the last one — the other never
+                # reaches the model while the sidebar still counts it. Verified:
+                # three tools in, two bound. The prefix also tells the model
+                # which server a tool belongs to.
+                #
+                # Done here rather than with the adapter's `tool_name_prefix`,
+                # which pastes the config key on unchecked. See `namespaced`.
+                tools = await load_mcp_tools(session, server_name=server_name)
+                ready.set_result(
+                    [
+                        self._guard(_renamed(tool, namespaced(server_name, tool.name)), server_name)
+                        for tool in tools
+                    ]
                 )
-                ready.set_result([self._guard(tool, server_name) for tool in tools])
                 await stop.wait()
         except asyncio.CancelledError:
             raise

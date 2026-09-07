@@ -10,6 +10,7 @@ server; what is pinned here is that the handling of them stays in place.
 from __future__ import annotations
 
 import asyncio
+import re
 from contextlib import asynccontextmanager
 
 import pytest
@@ -65,7 +66,7 @@ async def _clean(monkeypatch):
 async def test_tools_are_sorted_for_a_stable_cache_prefix():
     """Tool order is part of the cached prefix; an unstable order misses."""
     pool = await open_pool({"a": {}})
-    assert [t.name for t in pool.tools] == ["alpha", "beta"]
+    assert [t.name for t in pool.tools] == ["a_alpha", "a_beta"]
 
 
 async def test_the_same_config_reuses_the_open_session():
@@ -110,7 +111,7 @@ async def test_a_server_that_fails_to_start_does_not_take_the_others_with_it(
     monkeypatch.setattr("langchain_mcp_adapters.tools.load_mcp_tools", selective)
 
     pool = await open_pool({"broken": {}, "working": {}})
-    assert [t.name for t in pool.tools] == ["alpha"]
+    assert [t.name for t in pool.tools] == ["working_alpha"]
     assert [(f.server_name, f.at_startup) for f in pool.failures] == [("broken", True)]
     assert pool.healthy is False
 
@@ -289,19 +290,34 @@ async def test_tool_names_are_namespaced_by_server(monkeypatch):
 
     Verified against the real `create_agent`: three tools in, two bound, and
     the loser never reaches the model while the sidebar still counts it. The
-    fake loader here cannot reproduce that, so what this pins is that the
-    request for prefixing is actually made.
+    fake loader here cannot reproduce that, so what this pins is that the tools
+    the pool hands out carry the server name.
     """
-    seen: dict = {}
+    pool = await open_pool({"github": {}})
+    assert [t.name for t in pool.tools] == ["github_alpha", "github_beta"]
 
-    async def capturing(session, server_name=None, **kwargs):
-        seen.update(kwargs)
-        return [alpha]
 
-    monkeypatch.setattr("langchain_mcp_adapters.tools.load_mcp_tools", capturing)
+async def test_renaming_does_not_disturb_the_call(monkeypatch):
+    """The MCP server is still asked for the tool by its own name.
 
-    await open_pool({"github": {}})
-    assert seen.get("tool_name_prefix") is True
+    The adapter closes over the raw name, so a rename is visible to the model
+    and to nobody else. If renaming ever started rewriting the call, every tool
+    would fail with `unknown tool`.
+    """
+
+    async def echo(value: str) -> str:
+        return f"called with {value}"
+
+    async def fake_load(session, server_name=None, **kwargs):
+        renamable = alpha.model_copy()
+        renamable.coroutine = echo
+        return [renamable]
+
+    monkeypatch.setattr("langchain_mcp_adapters.tools.load_mcp_tools", fake_load)
+
+    pool = await open_pool({"github": {}})
+    assert pool.tools[0].name == "github_alpha"
+    assert await pool.tools[0].ainvoke({"value": "x"}) == "called with x"
 
 
 async def test_tools_that_still_collide_are_reported(monkeypatch):
@@ -321,10 +337,58 @@ async def test_tools_that_still_collide_are_reported(monkeypatch):
 
     pool = await open_pool({"one": {}})
     assert pool.healthy is False
-    assert any("named 'alpha'" in failure.error for failure in pool.failures), pool.failures
+    assert any("named 'one_alpha'" in failure.error for failure in pool.failures), pool.failures
 
 
 async def test_distinct_tool_names_are_not_reported(monkeypatch):
     pool = await open_pool({"a": {}})
     assert pool.healthy is True
     assert pool.failures == []
+
+
+# --- Building a tool name the API will accept ---------------------------------
+
+
+def test_a_plain_name_is_just_prefixed():
+    from mcp_agent.sessions import namespaced
+
+    assert namespaced("github", "search") == "github_search"
+
+
+def test_a_smithery_style_key_does_not_produce_an_illegal_name():
+    """`README.md` tells users to paste Smithery JSON, whose keys look like this.
+
+    Anthropic rejects the whole request when any tool name fails
+    `^[a-zA-Z0-9_-]{1,64}$` — so one such entry costs every turn, not one tool.
+    """
+    from mcp_agent.sessions import namespaced
+
+    name = namespaced("@smithery-ai/server-sequential-thinking", "sequentialthinking")
+    assert re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name), name
+
+
+@pytest.mark.parametrize(
+    "server_name",
+    ["@scope/pkg", "server name", "서버", "a.b.c", "x" * 200, "", "///", "-"],
+)
+def test_every_server_name_yields_an_acceptable_tool_name(server_name):
+    from mcp_agent.sessions import namespaced
+
+    name = namespaced(server_name, "search")
+    assert re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name), name
+
+
+def test_the_tool_name_is_kept_whole_when_the_prefix_will_not_fit():
+    """The model reasons about the tool name; the prefix only disambiguates."""
+    from mcp_agent.sessions import namespaced
+
+    tool = "b" * 60
+    assert namespaced("a" * 40, tool).endswith(tool)
+    assert len(namespaced("a" * 40, tool)) <= 64
+
+
+def test_a_tool_name_the_api_would_reject_is_also_cleaned():
+    """The name comes from the server, which is no more trusted than the config."""
+    from mcp_agent.sessions import namespaced
+
+    assert namespaced("github", "search files!") == "github_search_files"

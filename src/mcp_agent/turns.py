@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -96,9 +97,14 @@ class Turn:
         self._events: queue.Queue[TurnEvent] = queue.Queue()
         self._result: QueryResult | None = None
         # `run_query` owns the turn deadline so a cut-short turn still reports
-        # its partial text and spent tokens. This one only bounds the wait for
-        # the future itself, so a hung loop cannot block the browser forever.
+        # its partial text and spent tokens. This one bounds the *wait* on this
+        # side of the boundary — iteration and the final collect together — so
+        # a loop that stops answering cannot hold the script thread, and the
+        # browser with it, indefinitely. The grace is what separates the two:
+        # under it, `run_query`'s own timeout wins and the partial turn is
+        # reported normally.
         self._deadline = None if timeout_seconds is None else timeout_seconds + grace_seconds
+        self._started = time.monotonic()
         self._future = asyncio.run_coroutine_threadsafe(
             run_query(
                 agent,
@@ -112,7 +118,7 @@ class Turn:
         )
 
     def __iter__(self):
-        """Yield events until the turn finishes, coalescing any backlog.
+        """Yield events until the turn finishes or runs out of time.
 
         Every event carries the *full* accumulated text or tool log, never a
         delta, so when several have queued up only the last of each kind says
@@ -124,6 +130,13 @@ class Turn:
                 first = self._events.get(timeout=_POLL_SECONDS)
             except queue.Empty:
                 if self._future.done():
+                    break
+                if self._out_of_time():
+                    # The deadline is only load-bearing here. Leaving it to
+                    # `_collect` made it dead code: iteration ended only when
+                    # the future finished, so a loop that never finished held
+                    # the script thread and the browser with it, and `_collect`
+                    # was never reached to notice.
                     break
                 continue
 
@@ -143,10 +156,27 @@ class Turn:
 
         self._result = self._collect()
 
+    def _out_of_time(self) -> bool:
+        """True once the whole turn has outlived its deadline."""
+        remaining = self._remaining()
+        return remaining is not None and remaining <= 0.0
+
+    def _remaining(self) -> float | None:
+        """Seconds left on the deadline, or None when there is no deadline."""
+        if self._deadline is None:
+            return None
+        return self._deadline - (time.monotonic() - self._started)
+
     def _collect(self) -> QueryResult:
-        """The turn's outcome, converting a stuck future into a reported error."""
+        """The turn's outcome, converting a stuck future into a reported error.
+
+        The wait is what is *left* of the deadline, not the whole of it again:
+        iteration has already spent most of it, and waiting a second full
+        deadline here would double the time the page sits frozen.
+        """
+        remaining = self._remaining()
         try:
-            return self._future.result(timeout=self._deadline)
+            return self._future.result(timeout=None if remaining is None else max(0.0, remaining))
         except TimeoutError:
             self._future.cancel()
             logger.error("Turn did not return within %ss", self._deadline)
