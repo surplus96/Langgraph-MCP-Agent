@@ -96,6 +96,18 @@ correct" are different claims, and conflating them is the failure mode that
 costs the most here. If you skipped a verification step, say which one — do not
 report the work as verified.
 
+**End every summary with who did what.** One short line per piece of work,
+naming the agent that took it — or saying plainly that none was needed and why.
+Both halves matter: a list that only ever names agents is not evidence of
+judgement, it is evidence of ceremony. Keep it to a line each; the reasoning
+belongs in the body of the report.
+
+```
+- Secret-scanning CI     → security-reviewer. Found three bypasses I had missed.
+- Documentation set      → docs-reviewer. Found two live defects.
+- v0.3.0 tag             → no agent. One command, and it either works or 403s.
+```
+
 ## Secrets
 
 `config.json`, `.env` and `data/` are gitignored, and gitleaks runs pre-commit
@@ -128,5 +140,9 @@ justify adding it.
 Use them. Reviewing your own work in the same context that produced it is how
 the caching no-op, the surviving mutations, and the half-landed timeout fix all
 got through the first time. Spawn the specialist whose question you actually
-have, rather than a general reviewer — and say which one you used, or say that
-you decided a review was not worth it and why.
+have, rather than a general reviewer.
+
+Then record it: every summary ends with the who-did-what list described under
+[Reporting](#reporting). "No agent needed, here is why" is a valid and expected
+entry — a rename, a version bump or a one-command fix does not earn a review,
+and spawning one to look busy wastes the reviewer's value along with the time.
