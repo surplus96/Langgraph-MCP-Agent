@@ -180,6 +180,25 @@ def render_usage(usage: TokenUsage) -> None:
         )
 
 
+def render_server_failures() -> None:
+    """Name the MCP servers that failed, if any.
+
+    The pool skips a broken server rather than failing the whole run, which is
+    the right behaviour and also an invisible one: without this, the only
+    symptom is a tool count quietly lower than expected, and the reason is in a
+    log the user is not reading.
+    """
+    from mcp_agent.sessions import current_pool
+
+    pool = current_pool()
+    if pool is None or pool.healthy:
+        return
+
+    for failure in pool.failures:
+        when = "failed to start" if failure.at_startup else "stopped responding"
+        st.warning(f"⚠️ MCP server **{failure.server_name}** {when}: {failure.error}")
+
+
 def render_history() -> None:
     """Replay the conversation."""
     for message in state.history:
@@ -332,6 +351,7 @@ with st.sidebar:
                         state.pending_mcp_config[name] = validate_server_config(name, entry)
                         added.append(name)
 
+                    state.config_dirty = True
                     st.success(f"Added: {', '.join(added)}. Click 'Apply Settings' to apply.")
                     st.rerun()
                 except json.JSONDecodeError as exc:
@@ -353,6 +373,7 @@ with st.sidebar:
             col1.markdown(f"- **{tool_name}**")
             if TOOL_EDITING_ENABLED and col2.button("Delete", key=f"del_{tool_name}"):
                 del state.pending_mcp_config[tool_name]
+                state.config_dirty = True
                 st.rerun()
 
     st.divider()
@@ -363,6 +384,7 @@ with st.sidebar:
 with st.sidebar:
     st.subheader("📊 System Information")
     st.write(f"🛠️ MCP Tools Count: {state.tool_count}")
+    render_server_failures()
     st.write(f"🧠 Current Model: {state.selected_model}")
     spec = MODEL_REGISTRY[state.selected_model]
     st.write(f"📐 Max Output Tokens: {spec.max_tokens:,}")
@@ -374,9 +396,17 @@ with st.sidebar:
 
     if st.button("Apply Settings", type="primary", use_container_width=True):
         try:
-            save_config(state.pending_mcp_config)
+            if state.config_dirty:
+                save_config(state.pending_mcp_config)
+                state.config_dirty = False
+            else:
+                # Nothing was edited in this session, so the file is
+                # authoritative — re-read it. Writing the session's copy back
+                # unconditionally silently discarded an edit made on disk,
+                # which is the only way to add a tool when the editor is off.
+                state.pending_mcp_config = validate_config(load_config())
         except ConfigError as exc:
-            logger.error("Could not save MCP config: %s", exc)
+            logger.error("Could not apply MCP config: %s", exc)
             st.error(f"❌ {exc}")
         else:
             if initialize_session(state.pending_mcp_config):

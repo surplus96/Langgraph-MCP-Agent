@@ -20,7 +20,7 @@ Most of the design below exists to reconcile those three.
 
 ```
 app.py                     Presentation only. Streamlit widgets, layout, copy.
-  │                        Holds no logic worth testing without a browser.
+  │                        Nothing here is testable without a script run.
   ▼
 src/mcp_agent/             The application. No Streamlit import below this line
   │                        except in state.py, which is where sessions live.
@@ -35,13 +35,15 @@ src/mcp_agent/             The application. No Streamlit import below this line
   └── state.py             Typed per-browser-session state.
 ```
 
-The rule that keeps this honest: **`app.py` must contain nothing you would want
-to unit test.** Anything that deserves a test belongs in the package, where it
-can be tested without `AppTest`. `tests/test_app_smoke.py` exists to check that
-the script runs and renders, not to check behaviour.
+The rule that keeps this honest: **`app.py` must contain nothing that can be
+tested without a script run.** Anything testable in isolation belongs in the
+package. What is left — the login gate, the editor gate, the caching-floor
+warning, the failure banner — only exists at script level, and
+`tests/test_app_smoke.py` drives it through Streamlit's `AppTest`.
 
 `usage.py` is a leaf on purpose. `state.py` needs `TokenUsage`, and importing it
-must not drag in LangChain, the agent stack, or an event loop.
+must not drag in `langchain`, `langgraph`, Streamlit or an event loop. It does
+import `langchain_core.messages.ai.UsageMetadata` — types only, no runtime.
 
 ## The event loop
 
@@ -107,7 +109,8 @@ everything looking healthy until something calls a tool — and the raw failure
 that then reaches the model is `ClosedResourceError` with an empty message.
 Both defects were found by killing a real server, not by reading the code.
 
-`_guard()` wraps every tool at the one place the failure is observable. It
+`_guard()` wraps every async tool at the one place the failure is observable
+(a tool with no `coroutine` is returned untouched rather than half-wrapped). It
 distinguishes transport death from an ordinary tool error by walking the `raise
 from` chain against a set of exception names, records the failure once, and
 re-raises a `ToolException` that says what actually happened and what to do
@@ -142,9 +145,12 @@ turn, not once.
 
 Anthropic silently ignores `cache_control` on a prefix shorter than a
 per-model minimum: 512 tokens for Opus 5, 1024 for Sonnet 5, 4096 for Haiku
-4.5. This project's prefix with no MCP tools registered is around 490 tokens,
-so caching does nothing at all on two of the three models until tools are
-added.
+4.5. This project's prefix with no MCP tools registered is **400 tokens** by
+the estimator's own reckoning (`len(SYSTEM_PROMPT) // 4`, measured: 1602
+characters), which is below every one of those floors — so with no tools
+registered, caching does nothing on **any** of the three models. Opus 5 clears
+its floor after the first couple of tool schemas; Sonnet 5 and Haiku 4.5 need
+substantially more.
 
 Nothing in the API reports this. `AgentBundle.estimated_prefix_tokens` and
 `ModelSpec.min_cacheable_tokens` exist so the sidebar can say "your prefix is
@@ -205,7 +211,9 @@ the effort and thinking settings.
 
 `RESTRICTED_MODELS` is a policy list, not a capability list: entries are real,
 usable models that this project has decided not to spend on without a sign-off.
-The registry says why, and the UI shows that reason.
+The registry records why, `available_models()` omits them from the selector, and
+a test fails if an id appears in both maps. The reason itself is not surfaced in
+the UI — it is a note for whoever is deciding, not for whoever is chatting.
 
 ## Configuration and trust boundaries
 
@@ -261,7 +269,7 @@ user submits a prompt in app.py
 
 ## Testing
 
-122 tests, none of which need a network or an API key. The parts that matter:
+125 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache

@@ -8,7 +8,7 @@ validated, and what happens when a server misbehaves. The
 
 | Environment | Path |
 |---|---|
-| Source checkout | `config.json` in the repository root |
+| Source checkout | `config.json`, relative to the **working directory** you launch Streamlit from — the repository root, if you follow the README |
 | Docker | `/app/data/config.json`, on the mounted `./data` volume |
 | Anywhere | Whatever `MCP_CONFIG_PATH` names |
 
@@ -61,20 +61,39 @@ nothing else, so pick something you will recognise when it fails.
 `transport` may be `stdio`, `sse` or `streamable_http`. Set it explicitly when
 using `streamable_http`, since the inference for a `url` entry gives you `sse`.
 
-Use `env` for a server's own credentials:
+### The subprocess does not inherit your environment
+
+This is the single most common reason a server that runs by hand fails here.
+The MCP SDK does **not** pass this process's environment through. It passes a
+fixed safe subset — on Linux and macOS exactly `HOME`, `LOGNAME`, `PATH`,
+`SHELL`, `TERM`, `USER`; on Windows the `APPDATA`/`USERPROFILE` family — plus
+whatever you put in `env`.
+
+So `PATH` reaches the server, and a `GITHUB_TOKEN` you exported in your shell or
+set in `.env` does **not**. Any credential a server needs has to be in its own
+`env` block.
+
+Better than pasting the secret into the file: the adapter expands `${VAR}`
+references in `env` **values** from the parent environment, so the token can stay
+in `.env` and out of `config.json`.
 
 ```json
 {
   "github": {
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
-    "env": { "GITHUB_TOKEN": "ghp_..." },
+    "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
     "transport": "stdio"
   }
 }
 ```
 
-This is the reason the file is gitignored.
+Only braced `${VAR}` is expanded — bare `$VAR` is left alone, so a literal
+dollar sign in a password is never corrupted — and an undefined variable is
+passed through unchanged rather than becoming empty. Keys are not expanded.
+
+If you do paste a literal secret instead, that is the reason this file is
+gitignored.
 
 ## Validation
 
@@ -99,7 +118,13 @@ mid-write cannot truncate the file.
 ### By editing the file
 
 The default, and the one to prefer. Edit `config.json`, then click **Apply
-Settings** in the sidebar. The sidebar reports the number of tools discovered.
+Settings** in the sidebar. The sidebar reports the number of tools discovered,
+and names any server that failed.
+
+Applying settings re-reads the file when you have not used the in-app editor in
+this browser session, so a hand edit is picked up without a page reload. (It
+used not to: the session's own copy was written back over the edit, leaving the
+file empty and no tool registered.)
 
 ### Through the UI
 
@@ -175,7 +200,9 @@ referenced two server scripts that do not exist in this repository, so it could
 not have worked as written.
 
 `examples/mcp_server_time.py` is in the repository as something safe to start
-with; `example_config.json` registers it.
+with; `example_config.json` registers it. It is a **source-checkout** example:
+`dockers/Dockerfile` does not copy `examples/` into the image, so that entry
+will not resolve in a container.
 
 ## Finding servers
 
@@ -193,6 +220,6 @@ before you register anything from them.
 | `requires an 'args' field` | `command` without `args`. Use `[]` if there are none. |
 | `is not valid JSON` | A trailing comma, usually. The file is not loaded at all until it parses. |
 | Tool count is 0 after Apply Settings | Every server failed to start; the sidebar names them. |
-| Server starts by hand but not here | Usually `PATH` or a missing credential. The subprocess inherits this process's environment plus `env`. |
+| Server starts by hand but not here | Almost always a missing credential: the subprocess gets a fixed subset of the environment plus `env`, and nothing else. See [above](#the-subprocess-does-not-inherit-your-environment). |
 | `no longer responding` mid-conversation | The server process died. Apply Settings reconnects. |
 | Everything is slow, ~700 ms per call | Sessions are not being reused — the config is changing between calls. |

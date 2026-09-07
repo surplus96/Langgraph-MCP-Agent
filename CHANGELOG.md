@@ -22,10 +22,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its shape (a key as a bare JSON array element) defeats the default rules.
 - `permissions: contents: read` on the CI workflow. Every job executes
   repository-controlled code and none of them write anything back.
+- The sidebar now names any MCP server that failed to start or stopped
+  responding. The pool had recorded these all along and nothing displayed them,
+  so the only symptom was a tool count quietly lower than expected.
+- `pre-commit` added to the dev dependency group. `CONTRIBUTING.md` told
+  contributors to run `uv run pre-commit install`, which could not work.
+
+### Fixed
+
+- **Editing `config.json` by hand no longer loses the edit.** The file is read
+  from disk once per browser session, and **Apply Settings** wrote that copy
+  back unconditionally — so a hand edit was silently overwritten and no tool was
+  registered. With the in-app editor off (the default) this is the *only*
+  documented way to add a tool. Applying settings now re-reads the file unless
+  the in-app editor changed something in this session.
+- **The container healthcheck can now pass.** It probed `/healthz`, which
+  Streamlit does not serve; the correct path is `/_stcore/health`. As written,
+  every container reported `unhealthy` for its whole life.
 
 ---
 
-## [0.3.0] — 2026-09-07
+## 0.3.0 — 2026-09-07
 
 A modernization of a codebase that, as inherited, did not start. Effectively a
 rewrite of everything below `app.py`, with the UI behaviour preserved.
@@ -99,8 +116,9 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
   cache-write keys that langchain-anthropic substitutes for the generic one.
 - **Caching-floor warning.** Anthropic silently ignores `cache_control` below a
   per-model minimum (512 / 1024 / 4096 tokens). This project's prefix with no
-  tools registered is ~490, so caching was a no-op on two of three models. The
-  sidebar now says so instead of showing an unexplained 0% hit rate.
+  tools registered is 400 tokens, below all three, so caching was a no-op on
+  every model until tools were added. The sidebar now says so instead of
+  showing an unexplained 0% hit rate.
 - **Effort control** (`low`…`max`), shown only for models that accept it —
   Haiku 4.5 rejects `output_config` with a 400.
 - **History summarization** at 80% of the context window, as a safety net
@@ -109,8 +127,9 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 - **Model registry** (`models.py`) as the single source of truth, replacing five
   duplicated and drifted model lists. Verified against `GET /v1/models` on
   2026-09-04; `scripts/check_models.py` re-checks it.
-- `claude-fable-5-1` restricted by project policy, with the reason recorded and
-  shown in the UI.
+- `claude-fable-5-1` restricted by project policy. The reason is recorded in
+  `RESTRICTED_MODELS`, the model is omitted from the selector, and two tests
+  enforce it. The reason is not surfaced in the UI.
 - Anthropic-only. The OpenAI model IDs could not be verified against first-party
   documentation, so they were removed rather than guessed at.
 
@@ -127,7 +146,7 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 
 ### Added
 
-- 122 tests, none requiring a network or an API key, including
+- 125 tests, none requiring a network or an API key, including
   `AppTest`-driven smoke tests and lifecycle tests for the session pool.
 - `dockers/Dockerfile` and a consolidated `docker-compose.yaml`. The compose
   file previously referenced a `build:` target that did not exist.
@@ -172,5 +191,4 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 No changelog was kept. See the commit history from `5cd21de` (2025-07-08)
 onward.
 
-[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.3.0
+[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/commits/main/

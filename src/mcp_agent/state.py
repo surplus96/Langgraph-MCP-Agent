@@ -39,6 +39,12 @@ class AppState:
     thread_id: str = field(default_factory=random_uuid)
     history: list[dict[str, Any]] = field(default_factory=list)
     pending_mcp_config: dict[str, Any] | None = None
+    #: True once the in-app editor has changed ``pending_mcp_config``. Applying
+    #: settings writes the file only when this is set: the config is read from
+    #: disk once per browser session, so writing unconditionally put a stale
+    #: copy back over whatever the user had edited on disk in the meantime —
+    #: which is the documented way to add a tool when the editor is off.
+    config_dirty: bool = False
     #: Cumulative across the session. Cache hits only become visible from the
     #: second turn onward, so a per-turn number alone cannot show them.
     usage: TokenUsage = field(default_factory=TokenUsage)

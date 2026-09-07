@@ -14,7 +14,10 @@ git clone https://github.com/surplus96/Langgraph-MCP-Agent.git
 cd Langgraph-MCP-Agent
 uv sync                              # installs dev dependencies too
 uv run pre-commit install            # ruff, gitleaks, whitespace hooks
-cp .env.example dockers/.env         # then fill in ANTHROPIC_API_KEY
+cp .env.example .env                 # then fill in ANTHROPIC_API_KEY
+                                     # (dockers/.env is for Compose only:
+                                     #  load_dotenv searches upward from
+                                     #  app.py and never looks in dockers/)
 ```
 
 Run it:
@@ -48,11 +51,13 @@ tests/              Mirrors the package, one file per module.
 
 **The rule: `app.py` must contain nothing you would want to unit test.** If a
 change adds logic to `app.py`, that is a signal it belongs in the package
-instead. `tests/test_app_smoke.py` exists to check the script runs and renders,
-not to check behaviour.
+instead. What legitimately lives there — the login gate, the editor gate, the
+caching-floor warning, the failure banner — is behaviour that only exists during
+a script run, and `tests/test_app_smoke.py` drives it through `AppTest`.
 
 `src/mcp_agent/usage.py` is a leaf module and must stay one — `state.py`
-imports it, and that import must not pull in LangChain or an event loop.
+imports it, and that import must not pull in `langchain`, `langgraph`, Streamlit
+or an event loop. `langchain_core` types are fine; it already imports one.
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing anything in
 `sessions.py`, `runtime.py`, or the middleware wiring in `agent.py`. Those three
@@ -133,6 +138,10 @@ uv run python scripts/check_models.py
 The registry carries a dated comment saying when it was last verified. If you
 change it, re-run the script and update the date. A model ID that "looks right"
 is not a model ID.
+
+The script checks the ids and `max_tokens` against the Models API.
+`min_cacheable_tokens` is **not** in that response — it comes from Anthropic's
+prompt-caching documentation and has to be re-read by hand.
 
 The same applies to performance claims. Numbers in this repository
 (58x, 319x, 610 ms) came from measurement, and one of them was corrected

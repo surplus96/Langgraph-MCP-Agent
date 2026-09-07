@@ -1,5 +1,7 @@
 # LangGraph Agents + MCP
 
+[한국어](README_KOR.md)
+
 [![GitHub](https://img.shields.io/badge/GitHub-Langgraph--MCP--Agent-black?logo=github)](https://github.com/surplus96/Langgraph-MCP-Agent)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-≥3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
@@ -12,7 +14,9 @@
 ### Features
 
 - **Streamlit Interface**: A user-friendly web interface for interacting with LangGraph `ReAct Agent` with MCP tools
-- **Tool Management**: Add, remove, and configure MCP tools through the UI (Smithery JSON format supported). This is done dynamically without restarting the application
+- **Tool Management**: MCP servers are configured in a JSON file. An optional in-app
+  editor (`MCP_ALLOW_TOOL_EDIT=true`, off by default) accepts Smithery-format JSON.
+  Either way, applying a change rebuilds the agent without restarting the process
 - **Streaming Responses**: View agent responses and tool calls in real-time
 - **Conversation History**: Track and manage conversations with the agent
 
@@ -91,8 +95,9 @@ uv sync
 cp .env.example .env
 ```
 
-4. Run the app. It serves on **port 8501** by default (the Docker path
-   remaps to 8585).
+4. Run the app. Streamlit's own default is **port 8501**; pass
+   `--server.port 8585` to match the Docker path, which runs Streamlit on 8585
+   and publishes it unchanged.
 
 ```bash
 uv run streamlit run app.py
@@ -154,7 +159,7 @@ uv sync              # install, including dev dependencies
 uv run ruff check .  # lint
 uv run ruff format . # format
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 122 tests
+uv run pytest -q     # 125 tests
 ```
 
 ## Usage
@@ -162,8 +167,13 @@ uv run pytest -q     # 122 tests
 1. Start the app (see above) and open it in your browser.
 2. Pick a model in the sidebar.
 3. Configure MCP tools (see [Configuring MCP tools](#configuring-mcp-tools)).
+   - **With the in-app editor on** (`MCP_ALLOW_TOOL_EDIT=true`): pick a server on
+     [Smithery](https://smithery.ai/), press COPY on its JSON configuration, paste
+     it into the **Tool JSON** box and press **Add Tool**. It appears in the
+     "Registered Tools List".
+   - **With the editor off** (the default): edit the configuration file directly.
 4. Click **Apply Settings**. The sidebar then shows the number of tools
-   discovered and the active model.
+   discovered and the active model, and names any server that failed to start.
 5. Ask questions in the chat. Tool calls appear in a collapsible panel under
    each answer.
 
@@ -182,6 +192,7 @@ Settings** again to rebuild the agent.
 | [SECURITY.md](SECURITY.md) | Threat model, what each control does and does not do, reporting a vulnerability. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, style, and the standard a test has to meet here. |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in this release. |
+| [CLAUDE.md](CLAUDE.md) | Working agreement for AI coding agents in this repository. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | The modernization plan this work followed, including what was deliberately deferred. |
 
 ## License

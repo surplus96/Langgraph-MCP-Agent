@@ -161,3 +161,74 @@ def test_effort_slider_appears_only_where_the_model_accepts_it(monkeypatch):
     assert not unsupported.exception
     assert not unsupported.sidebar.select_slider
     assert any("Effort is not supported" in c.value for c in unsupported.sidebar.caption)
+
+
+def _apply_settings(app):
+    """Click Apply Settings, whichever button index it happens to be."""
+    for button in app.button:
+        if button.label == "Apply Settings":
+            return button.click().run()
+    raise AssertionError("Apply Settings button not found")
+
+
+def test_editing_the_config_file_survives_apply_settings(monkeypatch, tmp_path):
+    """A hand edit to config.json must not be overwritten by Apply Settings.
+
+    With the in-app editor off — the default — editing the file is the only
+    supported way to add a tool. The config is read from disk once per browser
+    session, so applying settings used to write that stale copy back over the
+    edit, leaving the file as `{}` and no tool registered. Found by driving the
+    real script; the failure was silent.
+    """
+    import json
+
+    config = tmp_path / "config.json"
+    app = run_app(monkeypatch)
+    assert not app.exception
+
+    config.write_text(
+        json.dumps({"time": {"command": "python", "args": ["./x.py"], "transport": "stdio"}}),
+        encoding="utf-8",
+    )
+
+    _apply_settings(app)
+
+    on_disk = json.loads(config.read_text(encoding="utf-8"))
+    assert "time" in on_disk, f"the hand edit was overwritten; file is now {on_disk}"
+
+
+def test_applying_settings_without_an_edit_does_not_create_a_config(monkeypatch, tmp_path):
+    """No edit, no file. Applying settings is not a reason to write one."""
+    config = tmp_path / "config.json"
+    app = run_app(monkeypatch)
+    _apply_settings(app)
+    assert not config.exists()
+
+
+def test_a_failing_mcp_server_is_named_in_the_sidebar(monkeypatch, tmp_path):
+    """A server that will not start must say so, not just lower the tool count.
+
+    The pool skips a broken server rather than failing the whole run. Without
+    this rendering, the only symptom a user sees is a tool count quietly lower
+    than expected, with the reason in a log they are not reading.
+    """
+    import json
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "broken": {
+                    "command": "python",
+                    "args": [str(tmp_path / "no-such-server.py")],
+                    "transport": "stdio",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = _apply_settings(run_app(monkeypatch))
+    assert not app.exception
+    assert any("broken" in warning.value for warning in app.warning), (
+        f"no warning named the failing server; warnings were {[w.value for w in app.warning]}"
+    )

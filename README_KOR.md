@@ -1,5 +1,7 @@
 # LangGraph 에이전트 + MCP
 
+[English](README.md)
+
 [![GitHub](https://img.shields.io/badge/GitHub-Langgraph--MCP--Agent-black?logo=github)](https://github.com/surplus96/Langgraph-MCP-Agent)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-≥3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
@@ -12,7 +14,9 @@
 ### 특징
 
 - **Streamlit 인터페이스**: MCP 도구가 포함된 LangGraph `ReAct Agent`와 상호작용하기 위한 사용자 친화적인 웹 인터페이스
-- **도구 관리**: UI를 통해 MCP 도구를 추가, 제거 및 구성(Smithery JSON 형식 지원). 애플리케이션을 재시작하지 않고도 동적으로 이루어집니다.
+- **도구 관리**: MCP 서버는 JSON 파일로 설정합니다. 선택적으로 앱 내 편집기
+  (`MCP_ALLOW_TOOL_EDIT=true`, 기본값은 꺼짐)를 켜면 Smithery 형식 JSON을 붙여넣어
+  추가할 수 있습니다. 어느 쪽이든 프로세스를 재시작하지 않고 에이전트만 다시 만듭니다.
 - **스트리밍 응답**: 에이전트 응답과 도구 호출을 실시간으로 확인
 - **대화 기록**: 에이전트와의 대화 추적 및 관리
 
@@ -91,7 +95,9 @@ uv sync
 cp .env.example .env
 ```
 
-4. 앱을 실행합니다. 기본 포트는 **8501** 입니다 (Docker 경로는 8585로 매핑됩니다).
+4. 앱을 실행합니다. Streamlit 기본 포트는 **8501** 입니다. Docker 경로와 맞추려면
+   `--server.port 8585` 를 넘기세요 — 컨테이너는 Streamlit 을 8585 로 띄우고 그대로
+   공개합니다.
 
 ```bash
 uv run streamlit run app.py
@@ -153,7 +159,7 @@ uv sync              # 개발 의존성 포함 설치
 uv run ruff check .  # 린트
 uv run ruff format . # 포매팅
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 122개 테스트
+uv run pytest -q     # 125개 테스트
 ```
 
 ## 사용법
@@ -184,6 +190,7 @@ uv run pytest -q     # 122개 테스트
 | [SECURITY.md](SECURITY.md) | 위협 모델, 각 통제가 막는 것과 막지 못하는 것, 취약점 신고 방법. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 개발 환경 설정, 코드 스타일, 이 저장소가 테스트에 요구하는 기준. |
 | [CHANGELOG.md](CHANGELOG.md) | 이번 릴리스의 변경 사항. |
+| [CLAUDE.md](CLAUDE.md) | 이 저장소에서 AI 코딩 에이전트가 지켜야 할 작업 규약. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 이 작업이 따른 현대화 계획과, 의도적으로 미룬 항목. |
 
 ## 라이선스

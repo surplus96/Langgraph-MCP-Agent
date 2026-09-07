@@ -101,7 +101,9 @@ server scripts that do not exist in this repository.
 
 ### Container hardening
 
-`dockers/docker-compose.yaml` runs the image as UID 1000 with `read_only: true`,
+The image runs as UID 1000 (`useradd --uid 1000 appuser` in `dockers/Dockerfile`
+— compose has no `user:` key, so an audit of compose alone will not find it).
+`dockers/docker-compose.yaml` adds `read_only: true`,
 `cap_drop: ALL`, `no-new-privileges:true`, a `pids_limit` and a `mem_limit`, and
 binds the port to `127.0.0.1` only.
 
@@ -161,9 +163,12 @@ Read the scan as a floor, not a guarantee.
 
 ### Known historical exposure
 
-An OpenAI API key and a LangSmith API key were committed to
+Three API keys — Anthropic, OpenAI and LangSmith — were committed to
 `dockers/.env.example` on 2025-07-08, before this modernization, and remained in
-the history until found on 2025-09-04.
+the history until found on 2025-09-04. In this repository's copy all three are
+truncated fragments (15, 21 and 15 characters, each ending in `...`) rather than
+complete keys, and only the OpenAI one carries enough entropy for the scanner to
+flag it. They were treated as live regardless.
 
 A Smithery API key and profile ID were also committed, in `config.json`, in the
 same first commit and again at `c75d5c5`. Note that the secret scanner does

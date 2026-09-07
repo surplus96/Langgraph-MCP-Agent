@@ -50,7 +50,7 @@ USER appuser
 EXPOSE 8585
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl --fail http://localhost:8585/healthz || exit 1
+    CMD curl --fail http://localhost:8585/_stcore/health || exit 1
 
 CMD ["streamlit", "run", "app.py", \
      "--server.port=8585", \
