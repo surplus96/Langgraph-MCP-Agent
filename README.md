@@ -154,7 +154,7 @@ uv sync              # install, including dev dependencies
 uv run ruff check .  # lint
 uv run ruff format . # format
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 55 tests
+uv run pytest -q     # 122 tests
 ```
 
 ## Usage
@@ -172,6 +172,17 @@ Settings** again to rebuild the agent.
 
 ![MCP agent UI](assets/langgraph-mcp-agent-UI-01.png) 
 
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit together and why: the event loop, MCP session lifecycle, prompt caching, token accounting. |
+| [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) | The configuration file in full — every field, what is validated, troubleshooting. |
+| [SECURITY.md](SECURITY.md) | Threat model, what each control does and does not do, reporting a vulnerability. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, style, and the standard a test has to meet here. |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in this release. |
+| [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | The modernization plan this work followed, including what was deliberately deferred. |
 
 ## License
 

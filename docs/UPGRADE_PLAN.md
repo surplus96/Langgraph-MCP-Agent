@@ -210,6 +210,13 @@ Ordered by value. Requires Phase 1; step 4.2 should follow Phase 3.6.
 
 ## Phase 5 — Documentation
 
+**Status: complete (2026-09-07).** Items 1-6 landed with the README rewrite and
+`LICENSE` in `399ffe9` and the Dockerfile in `27665fa`. Item 7 landed with this
+change: `docs/ARCHITECTURE.md`, `docs/MCP_TOOLS.md`, `CONTRIBUTING.md`,
+`SECURITY.md`, `CHANGELOG.md` and `CLAUDE.md`. Both READMEs gained a
+documentation index, and their stale "55 tests" line is now 122.
+
+
 1. **Fix what is actively wrong:** both clone URLs (`MCP-Agnet.git` typo / wrong `cd`
    target), `cp .env.example .env` (file is at `dockers/.env.example`), the `.env` location
    prose, `claude-3-haiku-latest` (does not exist — it is `claude-3-5-haiku-latest`), the

@@ -153,7 +153,7 @@ uv sync              # 개발 의존성 포함 설치
 uv run ruff check .  # 린트
 uv run ruff format . # 포매팅
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 55개 테스트
+uv run pytest -q     # 122개 테스트
 ```
 
 ## 사용법
@@ -174,6 +174,17 @@ uv run pytest -q     # 55개 테스트
 새 설정으로 다시 만들어집니다.
 
 ![MCP agent UI](assets/langgraph-mcp-agent-UI-01.png)
+
+## 문서
+
+| 문서 | 내용 |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 구성 요소가 어떻게, 왜 그렇게 맞물려 있는지: 이벤트 루프, MCP 세션 수명, 프롬프트 캐싱, 토큰 집계. |
+| [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) | 설정 파일 전체 레퍼런스 — 모든 필드, 검증 규칙, 문제 해결. |
+| [SECURITY.md](SECURITY.md) | 위협 모델, 각 통제가 막는 것과 막지 못하는 것, 취약점 신고 방법. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 개발 환경 설정, 코드 스타일, 이 저장소가 테스트에 요구하는 기준. |
+| [CHANGELOG.md](CHANGELOG.md) | 이번 릴리스의 변경 사항. |
+| [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 이 작업이 따른 현대화 계획과, 의도적으로 미룬 항목. |
 
 ## 라이선스
 
