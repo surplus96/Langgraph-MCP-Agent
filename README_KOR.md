@@ -114,6 +114,7 @@ uv run streamlit run app.py
 | `MCP_ALLOW_TOOL_EDIT` | 아니오 | `false` | 앱 내 MCP 도구 편집기를 활성화합니다. |
 | `MCP_ALLOWED_COMMANDS` | 아니오 | `npx,uvx,node,python,python3,docker` | MCP 서버 `command` 허용 목록. |
 | `MCP_CONFIG_PATH` | 아니오 | `config.json` | MCP 서버 설정 파일 경로. |
+| `CHECKPOINT_DB_PATH` | 아니오 | `data/checkpoints.db` | 재시작 후에도 대화가 남도록 저장하는 위치. `:memory:` 로 두면 비활성화됩니다. |
 | `LOG_LEVEL` | 아니오 | `INFO` | 파이썬 로깅 레벨. |
 | `LANGSMITH_*` | 아니오 | 추적 꺼짐 | 이 애플리케이션이 아니라 LangSmith SDK가 읽습니다. 활성화하면 모든 프롬프트·도구 결과·모델 응답이 외부로 전송됩니다. |
 
@@ -159,7 +160,7 @@ uv sync              # 개발 의존성 포함 설치
 uv run ruff check .  # 린트
 uv run ruff format . # 포매팅
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 125개 테스트
+uv run pytest -q     # 144개 테스트
 ```
 
 ## 사용법

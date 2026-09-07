@@ -25,9 +25,18 @@ def run_app(monkeypatch, **env: str) -> AppTest:
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
+    import streamlit as st
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MCP_CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+    # `st.cache_resource` outlives an AppTest run, so the checkpointer one test
+    # opened would be handed to the next one — pointing at the previous test's
+    # database. That is right in production, where the process opens one
+    # checkpointer and the environment does not change under it, and wrong here.
+    # Clearing it is also what makes "restart" mean restart.
+    st.cache_resource.clear()
 
 
 def test_app_runs_without_exception(monkeypatch):
@@ -232,3 +241,117 @@ def test_a_failing_mcp_server_is_named_in_the_sidebar(monkeypatch, tmp_path):
     assert any("broken" in warning.value for warning in app.warning), (
         f"no warning named the failing server; warnings were {[w.value for w in app.warning]}"
     )
+
+
+def _thread_param(app) -> str:
+    """AppTest hands query params back as lists; a browser gives a string."""
+    value = app.query_params.get("thread")
+    if isinstance(value, list):
+        return value[0] if value else ""
+    return value or ""
+
+
+def test_the_thread_id_is_published_to_the_url(monkeypatch):
+    """A durable checkpointer is useless if the key it is stored under is not.
+
+    Without this, every browser session generates a fresh UUID, so the restored
+    conversation is written and then never asked for again.
+    """
+    app = run_app(monkeypatch)
+    assert not app.exception
+    assert _thread_param(app), "no thread id in the URL"
+
+
+def test_a_thread_id_in_the_url_is_adopted(monkeypatch):
+    """Reload, bookmark, or a second tab. The URL decides the conversation."""
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.query_params["thread"] = "a-known-thread"
+    app.run()
+    assert not app.exception
+    assert _thread_param(app) == "a-known-thread"
+
+
+def test_resetting_moves_the_url_to_the_new_conversation(monkeypatch):
+    """Leaving the old id would send the next reload back into what was reset."""
+    app = run_app(monkeypatch)
+    before = _thread_param(app)
+
+    for button in app.button:
+        if button.label == "Reset Conversation":
+            app = button.click().run()
+            break
+    else:
+        raise AssertionError("Reset Conversation button not found")
+
+    assert _thread_param(app) != before
+
+
+def test_the_url_thread_id_becomes_the_session_thread_id(monkeypatch):
+    """Observes the mechanism, not just the URL.
+
+    Asserting only that the URL still holds the id passes even if nothing reads
+    it — verified: replacing the assignment with `pass` left the suite green.
+    The id has to reach the state the agent is actually invoked with.
+    """
+    from mcp_agent.state import SESSION_KEY
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.query_params["thread"] = "a-known-thread"
+    app.run()
+
+    assert not app.exception
+    assert app.session_state[SESSION_KEY].thread_id == "a-known-thread"
+
+
+def test_a_stored_conversation_is_replayed_after_a_restart(monkeypatch, tmp_path):
+    """The end-to-end promise: close the process, come back, see the transcript.
+
+    A fresh script run is exactly what a restart looks like to Streamlit — no
+    session state, only the URL. If the transcript does not come back here, the
+    checkpointer is storing conversations nobody can reach.
+    """
+    import asyncio
+
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.runnables import RunnableConfig
+
+    db = tmp_path / "restored.db"
+    monkeypatch.setenv("CHECKPOINT_DB_PATH", str(db))
+
+    async def seed() -> None:
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        connection = await aiosqlite.connect(str(db))
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        await saver.aput(
+            RunnableConfig(configurable={"thread_id": "earlier-run", "checkpoint_ns": ""}),
+            {
+                "v": 1,
+                "id": "checkpoint-1",
+                "ts": "2026-09-07T00:00:00+00:00",
+                "channel_values": {
+                    "messages": [
+                        HumanMessage(content="remember this"),
+                        AIMessage(content="Noted."),
+                    ]
+                },
+                "channel_versions": {"messages": 1},
+                "versions_seen": {},
+            },
+            {"source": "loop", "step": 1, "parents": {}},
+            {"messages": 1},
+        )
+        await connection.close()
+
+    asyncio.run(seed())
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.query_params["thread"] = "earlier-run"
+    app.run()
+
+    assert not app.exception
+    rendered = " ".join(block.value for block in app.markdown)
+    assert "remember this" in rendered
+    assert "Noted." in rendered

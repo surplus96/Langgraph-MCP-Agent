@@ -114,6 +114,7 @@ uv run streamlit run app.py
 | `MCP_ALLOW_TOOL_EDIT` | No | `false` | Enables the in-app MCP tool editor. |
 | `MCP_ALLOWED_COMMANDS` | No | `npx,uvx,node,python,python3,docker` | Allowlist for MCP server `command` values. |
 | `MCP_CONFIG_PATH` | No | `config.json` | Where the MCP server configuration is stored. |
+| `CHECKPOINT_DB_PATH` | No | `data/checkpoints.db` | Where conversations are stored so they survive a restart. `:memory:` disables persistence. |
 | `LOG_LEVEL` | No | `INFO` | Python logging level. |
 | `LANGSMITH_*` | No | tracing off | Read by the LangSmith SDK, not by this application. Enabling tracing sends every prompt, tool result and model response to a third party. |
 
@@ -159,7 +160,7 @@ uv sync              # install, including dev dependencies
 uv run ruff check .  # lint
 uv run ruff format . # format
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 125 tests
+uv run pytest -q     # 144 tests
 ```
 
 ## Usage

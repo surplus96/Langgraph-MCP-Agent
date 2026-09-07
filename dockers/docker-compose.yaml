@@ -23,6 +23,8 @@ services:
       # In-app MCP tool registration spawns subprocesses; opt in deliberately.
       - MCP_ALLOW_TOOL_EDIT=${MCP_ALLOW_TOOL_EDIT:-false}
       - MCP_ALLOWED_COMMANDS=${MCP_ALLOWED_COMMANDS:-}
+      # Conversations persist to the ./data volume, alongside config.json.
+      - CHECKPOINT_DB_PATH=${CHECKPOINT_DB_PATH:-/app/data/checkpoints.db}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - NODE_OPTIONS=${NODE_OPTIONS:-}
     env_file:

@@ -29,6 +29,7 @@ src/mcp_agent/             The application. No Streamlit import below this line
   ├── models.py            The model registry and per-model capabilities.
   ├── config.py            Load, validate and persist the MCP server config.
   ├── usage.py             Token accounting.
+  ├── checkpoints.py       Conversation state that outlives the process.
   ├── streaming.py         Graph stream → callback.
   ├── runtime.py           The one background event loop.
   ├── auth.py              The login gate.
@@ -248,9 +249,31 @@ One dataclass, one key, one accessor. `reset_conversation()` changes the
 `thread_id` as well as clearing the transcript, so the checkpointer's history is
 abandoned along with the display rather than the two diverging.
 
-The checkpointer is an `InMemorySaver`: conversation history does not survive a
-process restart. See [UPGRADE_PLAN.md](UPGRADE_PLAN.md) for why a durable
-checkpointer was considered and deliberately deferred.
+### Conversation state that survives a restart
+
+`checkpoints.py` stores conversations in SQLite, on the same volume as
+`config.json`. Three pieces have to hold together, and the first one alone is
+the part that looks like the feature:
+
+1. **The checkpointer is durable.** SQLite via `langgraph-checkpoint-sqlite`,
+   opened on the background loop because the `aiosqlite` connection belongs to
+   whichever loop created it. An unwritable path falls back to memory with a
+   warning: losing persistence is a degradation, losing the app is not.
+2. **The thread id survives.** It was a UUID generated per browser session, so
+   every checkpoint was written under a key nothing would ever ask for again.
+   It now lives in the URL's query string, which survives a reload, can be
+   bookmarked, and gives each tab its own conversation for free.
+3. **The transcript is re-read.** The checkpointer restores what the *model*
+   remembers. What the *user* sees is `AppState.history`, which is Streamlit
+   session state and is gone. Restoring one without the other returns a blank
+   page in front of an agent that silently recalls everything.
+
+Set `CHECKPOINT_DB_PATH=:memory:` to opt out deliberately rather than by
+accident.
+
+`load_history` reconstructs text turns only. Tool calls are in the checkpoint,
+but the per-turn log the UI shows is assembled from the stream, and inventing a
+different-looking one would be worse than showing none.
 
 ## What a turn looks like
 
@@ -269,7 +292,7 @@ user submits a prompt in app.py
 
 ## Testing
 
-125 tests, none of which need a network or an API key. The parts that matter:
+144 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache

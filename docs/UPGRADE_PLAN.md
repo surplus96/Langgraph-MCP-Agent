@@ -146,8 +146,7 @@ registry model.
 **Status: items 1-9 landed.** Caching middleware, token accounting, effort
 control, timeout with partial-output preservation, multi-block streaming,
 cached tool discovery, long-lived MCP sessions, and history summarization are
-all in. Only the durable checkpointer (4.8) is outstanding, and it is a
-judgement call rather than a gap — see below.
+all in, and the durable checkpointer (4.8) landed afterwards — see below.
 
 ### Measured: MCP session reuse (4.7)
 
@@ -168,14 +167,25 @@ The npx case is the larger win and the more realistic one — the servers people
 actually configure are npm packages. It is also the case that made the old
 behaviour unusable: 9.2 s of overhead per turn against a 120 s default timeout.
 
-### Not done: durable checkpointer (4.8)
+### Done: durable checkpointer (4.8)
 
-`InMemorySaver` is now process-scoped, so the original bug — conversation state
-silently discarded on every "Apply Settings" — is fixed. Moving to
-`langgraph-checkpoint-sqlite` would additionally survive a process restart, at
-the cost of another dependency and a file to manage. For a local Streamlit app
-that is a judgement call, not an outstanding defect. Revisit if the app is ever
-deployed somewhere restarts matter.
+Deferred once as a judgement call, then asked for and built.
+
+Implementing it showed the deferral note had understated the work. Swapping
+`InMemorySaver` for `langgraph-checkpoint-sqlite` is the easy third of it, and
+on its own it produces a feature that passes its own tests and helps nobody:
+
+- The **thread id** was a UUID generated per browser session, so every
+  checkpoint was written under a key that no later session would ever ask for.
+  It now lives in the URL's query string.
+- The **transcript** is Streamlit session state. The checkpointer restores what
+  the model remembers; without re-reading the messages, a restored conversation
+  comes back as a blank page in front of an agent that silently recalls
+  everything — worse than forgetting.
+
+`test_a_stored_conversation_is_replayed_after_a_restart` is the test that holds
+all three together: a fresh script run with only a URL, which is exactly what a
+restart looks like to Streamlit.
 
 Ordered by value. Requires Phase 1; step 4.2 should follow Phase 3.6.
 
