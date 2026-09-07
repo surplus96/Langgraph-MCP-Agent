@@ -117,7 +117,12 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "${{ github.base_ref }}"
+          # No --depth: a shallow fetch grafts this repository shallow, and the
+          # base branch's tip then reads as a root commit whose entire tree is
+          # newly added. That turns the historical finding into an unrecognised
+          # fingerprint and fails the scan below. Reproduced exactly: 25 commits
+          # scanned and one leak, against 32 and none on the same checkout.
+          git fetch --quiet origin "${{ github.base_ref }}"
           if ! git cat-file -e FETCH_HEAD:.gitleaksignore 2>/dev/null; then
             # Bootstrap: the base branch predates the file. True exactly once,
             # for the pull request that introduces it; self-healing after merge.
