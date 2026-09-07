@@ -31,6 +31,7 @@ from mcp_agent.config import (  # noqa: E402
 )
 from mcp_agent.models import (  # noqa: E402
     DEFAULT_MODEL,
+    EFFORT_LEVELS,
     MODEL_REGISTRY,
     available_models,
 )
@@ -199,7 +200,12 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
     try:
         with st.spinner("🔄 Connecting to MCP server..."):
             bundle = run_sync(
-                build_agent(state.selected_model, mcp_config, get_checkpointer()),
+                build_agent(
+                    state.selected_model,
+                    mcp_config,
+                    get_checkpointer(),
+                    effort=state.selected_effort,
+                ),
                 timeout=state.timeout_seconds,
             )
     except TimeoutError:
@@ -239,8 +245,28 @@ with st.sidebar:
         help="Anthropic models require ANTHROPIC_API_KEY to be set.",
     )
 
-    if previous_model != state.selected_model and state.session_initialized:
-        st.warning("⚠️ Model changed. Click 'Apply Settings' to re-initialize.")
+    spec = MODEL_REGISTRY[state.selected_model]
+    previous_effort = state.selected_effort
+
+    if spec.supports_effort:
+        state.selected_effort = st.select_slider(
+            "🎚️ Effort",
+            options=EFFORT_LEVELS,
+            value=state.selected_effort,
+            help=(
+                "How hard the model works before answering. Lower means fewer, "
+                "more consolidated tool calls and less preamble — good for "
+                "routine lookups. Raise it for multi-step work. Changing this "
+                "invalidates the cached prompt prefix for the next turn."
+            ),
+        )
+    else:
+        st.caption(f"🎚️ Effort is not supported on {state.selected_model}.")
+
+    if state.session_initialized and (
+        previous_model != state.selected_model or previous_effort != state.selected_effort
+    ):
+        st.warning("⚠️ Setting changed. Click 'Apply Settings' to re-initialize.")
 
     state.timeout_seconds = st.slider(
         "⏱️ Response generation time limit (seconds)",
@@ -339,6 +365,8 @@ with st.sidebar:
     st.write(f"🧠 Current Model: {state.selected_model}")
     spec = MODEL_REGISTRY[state.selected_model]
     st.write(f"📐 Max Output Tokens: {spec.max_tokens:,}")
+    if spec.supports_effort:
+        st.write(f"🎚️ Effort: {state.selected_effort}")
     st.write(f"📥 Context Window: {spec.context_window:,}")
 
     render_usage(state.usage)

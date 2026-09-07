@@ -15,7 +15,7 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from mcp_agent.models import build_model
+from mcp_agent.models import DEFAULT_EFFORT, Effort, build_model
 from mcp_agent.streaming import astream_graph
 from mcp_agent.usage import TokenUsage
 
@@ -219,6 +219,7 @@ async def build_agent(
     model_id: str,
     mcp_config: dict[str, Any],
     checkpointer: InMemorySaver,
+    effort: Effort = DEFAULT_EFFORT,
 ) -> AgentBundle:
     """Connect to the configured MCP servers and build the ReAct agent."""
     from langchain.agents import create_agent
@@ -233,7 +234,7 @@ async def build_agent(
     tools = sorted(tools, key=lambda tool: tool.name)
 
     agent = create_agent(
-        build_model(model_id),
+        build_model(model_id, effort),
         tools,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,

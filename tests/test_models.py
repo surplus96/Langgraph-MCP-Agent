@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from mcp_agent.models import (
+    DEFAULT_EFFORT,
     DEFAULT_MODEL,
+    EFFORT_LEVELS,
     MODEL_REGISTRY,
     RESTRICTED_MODELS,
     ModelSpec,
@@ -89,3 +91,50 @@ def test_every_restriction_states_a_reason():
 def test_unknown_model_raises():
     with pytest.raises(KeyError):
         build_model("gpt-4o")
+
+
+# --- Effort and thinking ------------------------------------------------------
+
+
+def test_effort_reaches_models_that_accept_it(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    model = build_model("claude-opus-5", "xhigh")
+    assert model.output_config == {"effort": "xhigh"}
+
+
+def test_effort_is_withheld_from_models_that_reject_it(monkeypatch):
+    """Haiku 4.5 returns a 400 for output_config.effort; it must not be sent."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    model = build_model("claude-haiku-4-5-20251001", "max")
+    assert model.output_config is None
+
+
+def test_adaptive_thinking_asks_for_a_visible_summary(monkeypatch):
+    """The API default is "omitted", which streams as a long dead pause."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    model = build_model("claude-opus-5")
+    assert model.thinking == {"type": "adaptive", "display": "summarized"}
+
+
+def test_adaptive_thinking_is_withheld_where_unsupported(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert build_model("claude-haiku-4-5-20251001").thinking is None
+
+
+@pytest.mark.parametrize("effort", EFFORT_LEVELS)
+def test_every_advertised_effort_level_is_accepted(monkeypatch, effort):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert build_model("claude-opus-5", effort).output_config == {"effort": effort}
+
+
+def test_default_effort_is_a_level_the_ui_offers():
+    assert DEFAULT_EFFORT in EFFORT_LEVELS
+
+
+@pytest.mark.parametrize("model_id", list(MODEL_REGISTRY))
+def test_effort_and_thinking_support_agree_with_the_models_api(model_id: str):
+    """Verified 2026-09-04: only Haiku 4.5 lacks both."""
+    spec = MODEL_REGISTRY[model_id]
+    is_haiku = model_id.startswith("claude-haiku")
+    assert spec.supports_effort is not is_haiku
+    assert spec.supports_adaptive_thinking is not is_haiku

@@ -143,8 +143,10 @@ registry model.
 
 ## Phase 4 — Pipeline optimization
 
-**Status: items 1-2 landed 2026-09-04.** Caching middleware and token accounting
-are in; the hit rate is surfaced in the sidebar. Items 3-9 remain.
+**Status: items 1-5 landed 2026-09-04.** Caching middleware, token accounting,
+effort control, timeout with partial-output preservation, and multi-block
+streaming are in. Items 6-9 remain; 4.7 (MCP session reuse) is blocked on
+measurement.
 
 Ordered by value. Requires Phase 1; step 4.2 should follow Phase 3.6.
 

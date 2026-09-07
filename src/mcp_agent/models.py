@@ -9,13 +9,24 @@ either a ``KeyError`` or a silent misroute to the wrong provider.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 
+logger = logging.getLogger(__name__)
+
 Provider = Literal["anthropic"]
+
+#: How hard the model works before answering. Trades tokens for thoroughness;
+#: the API default is "high". Lower levels mean fewer, more consolidated tool
+#: calls and less preamble, which suits routine lookups.
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
+EFFORT_LEVELS: tuple[Effort, ...] = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT: Effort = "high"
 
 
 @dataclass(frozen=True)
@@ -38,6 +49,10 @@ class ModelSpec:
     #: matters when effort control is added; do not send effort where it is
     #: unsupported.
     supports_effort: bool
+    #: Whether the model takes ``thinking={"type": "adaptive"}``. Haiku 4.5 does
+    #: not — it still uses the older ``{"type": "enabled", "budget_tokens": N}``
+    #: form, which this app does not set. Verified against the Models API.
+    supports_adaptive_thinking: bool
 
 
 #: Ordered best-first; the first entry is the default selection.
@@ -47,6 +62,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     "claude-opus-5": ModelSpec(
         model_id="claude-opus-5",
         provider="anthropic",
+        supports_adaptive_thinking=True,
         min_cacheable_tokens=512,
         max_tokens=128_000,
         context_window=1_000_000,
@@ -56,6 +72,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     "claude-sonnet-5": ModelSpec(
         model_id="claude-sonnet-5",
         provider="anthropic",
+        supports_adaptive_thinking=True,
         min_cacheable_tokens=1_024,
         max_tokens=128_000,
         context_window=1_000_000,
@@ -65,6 +82,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     "claude-haiku-4-5-20251001": ModelSpec(
         model_id="claude-haiku-4-5-20251001",
         provider="anthropic",
+        supports_adaptive_thinking=False,
         min_cacheable_tokens=4_096,
         max_tokens=64_000,
         context_window=200_000,
@@ -97,8 +115,13 @@ def available_models() -> list[str]:
     return [model_id for model_id, spec in MODEL_REGISTRY.items() if os.environ.get(spec.env_key)]
 
 
-def build_model(model_id: str) -> BaseChatModel:
+def build_model(model_id: str, effort: Effort = DEFAULT_EFFORT) -> BaseChatModel:
     """Instantiate the chat model for ``model_id``.
+
+    Args:
+        model_id: A key of :data:`MODEL_REGISTRY`.
+        effort: How hard the model should work. Ignored, with a log line, on
+            models that do not accept it — sending it there is a 400.
 
     Raises:
         KeyError: if ``model_id`` is not in the registry.
@@ -114,10 +137,28 @@ def build_model(model_id: str) -> BaseChatModel:
         # `model` and `max_tokens` are the documented kwargs and work at
         # runtime (populate_by_name), but their pydantic aliases are what mypy
         # sees in the generated __init__, so it reports them as unknown.
+        extra: dict[str, Any] = {}
+
+        if spec.supports_effort:
+            extra["output_config"] = {"effort": effort}
+        elif effort != DEFAULT_EFFORT:
+            logger.info(
+                "%s does not accept output_config.effort; ignoring %r",
+                model_id,
+                effort,
+            )
+
+        if spec.supports_adaptive_thinking:
+            # display defaults to "omitted", which in a streaming chat UI reads
+            # as a long dead pause before any text appears. A summary is not
+            # the raw chain of thought; it is what the API is willing to show.
+            extra["thinking"] = {"type": "adaptive", "display": "summarized"}
+
         return ChatAnthropic(  # type: ignore[call-arg]
             model=spec.model_id,
             max_tokens=spec.max_tokens,
             max_retries=3,
+            **extra,
         )
 
     raise ValueError(f"Unsupported provider {spec.provider!r} for model {model_id!r}")

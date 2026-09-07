@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from mcp_agent.models import DEFAULT_MODEL
+from mcp_agent.models import DEFAULT_EFFORT, DEFAULT_MODEL, Effort
 from mcp_agent.usage import TokenUsage
 
 SESSION_KEY = "app_state"
@@ -35,6 +35,7 @@ class AppState:
     timeout_seconds: int = 120
     recursion_limit: int = 25
     selected_model: str = DEFAULT_MODEL
+    selected_effort: Effort = DEFAULT_EFFORT
     thread_id: str = field(default_factory=random_uuid)
     history: list[dict[str, Any]] = field(default_factory=list)
     pending_mcp_config: dict[str, Any] | None = None

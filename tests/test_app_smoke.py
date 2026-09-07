@@ -144,3 +144,20 @@ def test_short_prefix_is_reported_as_the_reason_caching_is_off(monkeypatch):
 
     assert not app.exception
     assert any("Caching is inactive" in w.value for w in app.warning)
+
+
+def test_effort_slider_appears_only_where_the_model_accepts_it(monkeypatch):
+    from mcp_agent.state import SESSION_KEY, AppState
+
+    supported = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    supported.session_state[SESSION_KEY] = AppState(selected_model="claude-opus-5")
+    supported.run()
+    assert not supported.exception
+    assert [s.label for s in supported.sidebar.select_slider] == ["🎚️ Effort"]
+
+    unsupported = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    unsupported.session_state[SESSION_KEY] = AppState(selected_model="claude-haiku-4-5-20251001")
+    unsupported.run()
+    assert not unsupported.exception
+    assert not unsupported.sidebar.select_slider
+    assert any("Effort is not supported" in c.value for c in unsupported.sidebar.caption)
