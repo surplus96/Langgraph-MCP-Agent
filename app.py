@@ -56,18 +56,6 @@ TOOL_EDITING_ENABLED = os.environ.get("MCP_ALLOW_TOOL_EDIT", "false").strip().lo
 state: AppState = AppState.get()
 
 
-@st.cache_resource(show_spinner=False)
-def load_tools(config_json: str) -> list:
-    """Discover MCP tools, cached on the configuration that produced them.
-
-    Keyed on the serialised config rather than the dict, because Streamlit's
-    cache needs a hashable key. Changing the model or the effort level also
-    routes through "Apply Settings", and without this each of those would pay
-    the ~580 ms discovery cost again for a tool set that has not changed.
-    """
-    return run_sync(discover_tools(json.loads(config_json)), timeout=120)
-
-
 @st.cache_resource
 def get_checkpointer():
     """One checkpointer for the process.
@@ -211,7 +199,7 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
     """Connect to MCP servers and build the agent. Returns success."""
     try:
         with st.spinner("🔄 Connecting to MCP server..."):
-            tools = load_tools(json.dumps(mcp_config, sort_keys=True))
+            tools = run_sync(discover_tools(mcp_config), timeout=120)
             bundle = run_sync(
                 build_agent(
                     state.selected_model,

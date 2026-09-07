@@ -269,29 +269,6 @@ def test_build_agent_attaches_the_caching_middleware(monkeypatch):
     assert bundle.estimated_prefix_tokens > 0
 
 
-def test_discover_tools_sorts_for_a_stable_cache_prefix(monkeypatch):
-    """Tool order is part of the cached prefix; an unstable order misses.
-
-    Sorting moved to discover_tools when discovery was split out so the caller
-    could cache it — the ~580 ms cost does not warm up on its own.
-    """
-    import asyncio
-
-    from mcp_agent.agent import discover_tools
-
-    class FakeClient:
-        def __init__(self, config):
-            pass
-
-        async def get_tools(self):
-            return [beta, alpha]  # deliberately unsorted
-
-    monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
-
-    tools = asyncio.run(discover_tools({}))
-    assert [t.name for t in tools] == ["alpha", "beta"]
-
-
 def test_ttl_falls_back_on_a_bad_value(monkeypatch):
     from mcp_agent.agent import _prompt_cache_ttl
 

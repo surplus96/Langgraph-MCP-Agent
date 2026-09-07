@@ -221,21 +221,16 @@ class AgentBundle:
 
 
 async def discover_tools(mcp_config: dict[str, Any]) -> list[Any]:
-    """Connect to the configured MCP servers and list their tools.
+    """Open (or reuse) long-lived MCP sessions and return their tools.
 
-    Measured at roughly 580 ms per call and it does not warm up — the adapter
-    starts a fresh server process each time — so the caller should cache this
-    on the configuration rather than re-running it whenever an unrelated
-    setting changes.
+    Delegates to :mod:`mcp_agent.sessions`, which holds one session per server
+    for as long as the configuration is unchanged. The tools it returns are
+    bound to those sessions, so they must not outlive the pool.
     """
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+    from mcp_agent.sessions import open_pool
 
-    client = MultiServerMCPClient(mcp_config)
-    tools = await client.get_tools()
-
-    # Deterministic ordering keeps the tool-definition block byte-stable across
-    # turns, which is what makes the cached prefix reusable.
-    return sorted(tools, key=lambda tool: tool.name)
+    pool = await open_pool(mcp_config)
+    return pool.tools
 
 
 async def build_agent(
