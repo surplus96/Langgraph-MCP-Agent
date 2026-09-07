@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [0.4.0] — 2026-09-07
+
+Conversations now outlive the process, and the secret scan CI never actually
+ran is now running and cannot be switched off from the branch it scans.
+
 ### Added
 
 - **Conversations survive a restart.** `InMemorySaver` is replaced by SQLite
@@ -25,7 +34,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The button's tooltip says the deletion is permanent, since it also destroys a
   bookmarked link. Tidying up can never raise — a failure there must not leave
   someone stuck in the conversation they asked to leave.
-
 - `docs/ARCHITECTURE.md`, `docs/MCP_TOOLS.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `CLAUDE.md` and this changelog.
 - A `secrets` job in CI running gitleaks over the full commit history, pinned by
@@ -45,6 +53,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so the only symptom was a tool count quietly lower than expected.
 - `pre-commit` added to the dev dependency group. `CONTRIBUTING.md` told
   contributors to run `uv run pre-commit install`, which could not work.
+- The suite grew from 125 tests to 150.
 
 ### Fixed
 
@@ -60,7 +69,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## 0.3.0 — 2026-09-07
+## [0.3.0] — 2026-09-07
 
 A modernization of a codebase that, as inherited, did not start. Effectively a
 rewrite of everything below `app.py`, with the UI behaviour preserved.
@@ -164,7 +173,7 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 
 ### Added
 
-- 150 tests, none requiring a network or an API key, including
+- 125 tests, none requiring a network or an API key, including
   `AppTest`-driven smoke tests and lifecycle tests for the session pool.
 - `dockers/Dockerfile` and a consolidated `docker-compose.yaml`. The compose
   file previously referenced a `build:` target that did not exist.
@@ -209,4 +218,6 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 No changelog was kept. See the commit history from `5cd21de` (2025-07-08)
 onward.
 
-[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/commits/main/
+[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.4.0...main
+[0.4.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.0
+[0.3.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.3.0

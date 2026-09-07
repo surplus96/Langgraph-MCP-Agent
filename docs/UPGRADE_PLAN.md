@@ -30,6 +30,13 @@ exists; `cp .env.example .env` targets a file that isn't there; both clone URLs 
 
 Not code work. Owner action required.
 
+**Status: complete (2025-09-04).** 0.1 — the Smithery API key was rotated and
+the profile reset; no usage was recorded against either. 0.2 — the OpenAI and
+LangSmith keys were revoked. The three values in `dockers/.env.example` turned
+out to be truncated fragments (15, 21 and 15 characters) rather than whole keys,
+but they were treated as live regardless. 0.3 — no network-reachable deployment
+existed; the Docker Hub account carried no image for this project.
+
 | # | Action |
 |---|---|
 | 0.1 | **Rotate the Smithery API key** (`config.json:10`, `:22`) — public since 2025-07-08, ~14 months. Rotate at the provider *first*; the blob stays reachable in every fork regardless of what happens to this copy. Revoke the Tavily profile (`config.json:24`). |
@@ -41,6 +48,11 @@ Not code work. Owner action required.
 ## Phase 1 — Make it run again
 
 Goal: a working app on current models. Smallest change set that clears the three blockers.
+
+**Status: complete.** Landed in `c75d5c5`, merged as PR #1. All three blockers
+cleared: retired model IDs, `temperature` rejected outright by current Claude
+models, and an adapter pin whose synchronous `get_tools()` could not satisfy the
+`await` in `app.py`.
 
 1. **Dependency floor bump.** `langchain-mcp-adapters>=0.3.2,<0.4`, `mcp[cli]>=1.24.0,<2.0.0`
    (0.3.2 requires `mcp<2`), `langgraph>=1.2.11`, `langchain>=1.4.0`,
@@ -83,6 +95,12 @@ registry model.
 
 ## Phase 2 — Security hardening
 
+**Status: complete.** Landed across `c75d5c5` and `27665fa`, merged as PR #1.
+The authentication bypass, the unauthenticated RCE path through the tool editor,
+the tracked `config.json` and the injection-prone default config are all closed.
+Automated secret scanning followed in 0.4.0 — it is listed under Phase 3 tooling
+but was not actually running until then.
+
 1. **Stop shipping secrets.** Add `config.json` to `.gitignore`; ship only
    `example_config.json`; resolve `${ENV_VAR}` references in config values instead of
    storing literals. Add a `.dockerignore` (`.git`, `.env*`, `config.json`, `data/`) —
@@ -115,6 +133,9 @@ registry model.
 
 ## Phase 3 — Structure and tooling
 
+**Status: complete.** Landed in `c75d5c5` (extraction, dead-code removal, typed
+state) and `27665fa` (ruff, mypy, pre-commit, CI), merged as PR #1.
+
 1. **Delete dead code first** (~250 lines, zero behavior change): `ainvoke_graph`
    (`utils.py:214-322`, no callers), the unreachable `updates` branch and CLI-print
    fallbacks in `astream_graph`, the dead nested `format_namespace` (`utils.py:40-41`),
@@ -143,10 +164,11 @@ registry model.
 
 ## Phase 4 — Pipeline optimization
 
-**Status: items 1-9 landed.** Caching middleware, token accounting, effort
-control, timeout with partial-output preservation, multi-block streaming,
-cached tool discovery, long-lived MCP sessions, and history summarization are
-all in, and the durable checkpointer (4.8) landed afterwards — see below.
+**Status: complete.** Caching middleware, token accounting, effort control,
+timeout with partial-output preservation, multi-block streaming, cached tool
+discovery, long-lived MCP sessions and history summarization landed in PR #1 and
+the follow-ups to it. The durable checkpointer (4.8) was deferred as a judgement
+call, then asked for and built in 0.4.0 — see below.
 
 ### Measured: MCP session reuse (4.7)
 
