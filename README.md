@@ -114,6 +114,7 @@ uv run streamlit run app.py
 | `MCP_ALLOW_TOOL_EDIT` | No | `false` | Enables the in-app MCP tool editor. |
 | `MCP_ALLOWED_COMMANDS` | No | `npx,uvx,node,python,python3,docker` | Allowlist for MCP server `command` values. |
 | `MCP_CONFIG_PATH` | No | `config.json` | Where the MCP server configuration is stored. |
+| `MCP_TOOL_TIMEOUT` | No | `60` | Seconds one tool call may run. Must stay below the turn timeout, or a call still running at the turn deadline leaves the conversation unusable. |
 | `CHECKPOINT_DB_PATH` | No | `data/checkpoints.db` | Where conversations are stored so they survive a restart. `:memory:` disables persistence. |
 | `LOG_LEVEL` | No | `INFO` | Python logging level. |
 | `LANGSMITH_*` | No | tracing off | Read by the LangSmith SDK, not by this application. Enabling tracing sends every prompt, tool result and model response to a third party. |

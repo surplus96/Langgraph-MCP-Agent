@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +44,28 @@ _SESSION_FAILURE_NAMES = frozenset(
         "ConnectionResetError",
     }
 )
+
+
+#: Seconds a single tool call may take before it is cut short. Must stay
+#: comfortably below the turn timeout, or the turn deadline fires first and
+#: takes the thread down with it — see :meth:`SessionPool._guard`.
+DEFAULT_TOOL_TIMEOUT = 60.0
+
+
+def tool_timeout() -> float:
+    """How long one tool call may run. Override with MCP_TOOL_TIMEOUT."""
+    raw = os.environ.get("MCP_TOOL_TIMEOUT")
+    if not raw:
+        return DEFAULT_TOOL_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("MCP_TOOL_TIMEOUT=%r is not a number; using %s", raw, DEFAULT_TOOL_TIMEOUT)
+        return DEFAULT_TOOL_TIMEOUT
+    if value <= 0:
+        logger.warning("MCP_TOOL_TIMEOUT=%r is not positive; using %s", raw, DEFAULT_TOOL_TIMEOUT)
+        return DEFAULT_TOOL_TIMEOUT
+    return value
 
 
 def _is_session_failure(exc: BaseException) -> bool:
@@ -154,14 +177,28 @@ class SessionPool:
                 )
 
     def _guard(self, tool: BaseTool, server_name: str) -> BaseTool:
-        """Wrap a tool so a dead session reports itself usefully.
+        """Wrap a tool so it always returns something the thread can survive.
 
-        A held session does not announce its own death: the keeper is parked
+        Two failures are caught here, and both are about the same thing: a tool
+        call that does not come back leaves the conversation broken, not just
+        the turn.
+
+        **A dead session does not announce itself.** The keeper is parked
         waiting to be stopped, not reading the stream, so killing the server
         leaves everything looking fine until something calls a tool. Verified
         by killing the process — the raw failure that reaches the model is
         ``ClosedResourceError`` with an empty message, which tells nobody
-        anything. Catch it at the one place it is observable.
+        anything.
+
+        **A slow tool poisons the thread.** ``run_query`` bounds the *turn*. If
+        that deadline lands while a tool is still running, the model node has
+        already been checkpointed with its ``tool_calls`` and no
+        ``ToolMessage`` ever follows — an invalid message sequence that
+        Anthropic rejects. Because it is checkpointed, every later turn on that
+        thread rebuilds the same invalid sequence, and the only way out is to
+        reset the conversation. Bounding the *call* instead keeps the pair
+        complete: ``ToolException`` reaches ``ToolNode``'s error handling and
+        becomes an ordinary tool result the model can read and react to.
         """
         # `coroutine` lives on StructuredTool rather than the BaseTool the
         # adapter is typed to return, so reach for it defensively: a tool
@@ -170,9 +207,19 @@ class SessionPool:
         if inner is None:
             return tool
 
+        limit = tool_timeout()
+
         async def call(*args: Any, **kwargs: Any) -> Any:
             try:
-                return await inner(*args, **kwargs)
+                async with asyncio.timeout(limit):
+                    return await inner(*args, **kwargs)
+            except TimeoutError as exc:
+                logger.warning("Tool %r on %r exceeded %ss", tool.name, server_name, limit)
+                raise ToolException(
+                    f"The tool {tool.name!r} did not finish within {limit:.0f} seconds and "
+                    "was stopped. Tell the user it timed out rather than retrying it "
+                    "unchanged."
+                ) from exc
             except Exception as exc:
                 if not _is_session_failure(exc):
                     raise

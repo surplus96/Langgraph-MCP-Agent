@@ -9,6 +9,7 @@ server; what is pinned here is that the handling of them stays in place.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -201,3 +202,80 @@ def test_a_self_referencing_cause_chain_does_not_hang():
 
 async def test_a_pool_that_never_started_closes_cleanly():
     await SessionPool(config={}).aclose()
+
+
+# --- Bounding the call, not just the turn -------------------------------------
+
+
+def test_tool_timeout_defaults_and_is_configurable(monkeypatch):
+    from mcp_agent.sessions import DEFAULT_TOOL_TIMEOUT, tool_timeout
+
+    monkeypatch.delenv("MCP_TOOL_TIMEOUT", raising=False)
+    assert tool_timeout() == DEFAULT_TOOL_TIMEOUT
+
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", "5")
+    assert tool_timeout() == 5.0
+
+
+@pytest.mark.parametrize("bad", ["", "soon", "0", "-3"])
+def test_a_useless_tool_timeout_falls_back(monkeypatch, bad):
+    """A typo must not disable the bound that keeps threads valid."""
+    from mcp_agent.sessions import DEFAULT_TOOL_TIMEOUT, tool_timeout
+
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", bad)
+    assert tool_timeout() == DEFAULT_TOOL_TIMEOUT
+
+
+def _guarded(coroutine, *, name="slow_tool"):
+    """Run one tool through _guard, as the agent would."""
+    from langchain_core.tools import StructuredTool
+
+    from mcp_agent.sessions import SessionPool
+
+    tool = StructuredTool.from_function(
+        coroutine=coroutine, name=name, description="x", args_schema=None
+    )
+    return SessionPool(config={})._guard(tool, "server-a")
+
+
+def test_a_slow_tool_becomes_a_tool_error_rather_than_hanging(monkeypatch):
+    """The guarantee: the call is bounded, so the tool_use/tool_result pair closes.
+
+    Left unbounded, the turn deadline lands mid-call and the thread is
+    checkpointed with tool_calls and no ToolMessage — an invalid sequence that
+    every later turn on that thread rebuilds.
+    """
+    from langchain_core.tools import ToolException
+
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", "0.05")
+
+    async def never_returns():
+        await asyncio.sleep(30)
+
+    guarded = _guarded(never_returns)
+
+    with pytest.raises(ToolException) as caught:
+        asyncio.run(guarded.coroutine())
+
+    assert "did not finish" in str(caught.value)
+    assert "slow_tool" in str(caught.value)
+
+
+def test_a_tool_that_finishes_in_time_is_untouched(monkeypatch):
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", "5")
+
+    async def quick():
+        return "done"
+
+    assert asyncio.run(_guarded(quick).coroutine()) == "done"
+
+
+def test_an_ordinary_tool_failure_still_propagates(monkeypatch):
+    """Only transport death and timeouts are translated; real errors are real."""
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", "5")
+
+    async def explodes():
+        raise ValueError("the file does not exist")
+
+    with pytest.raises(ValueError, match="does not exist"):
+        asyncio.run(_guarded(explodes).coroutine())
