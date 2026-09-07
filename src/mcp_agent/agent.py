@@ -328,6 +328,18 @@ async def run_query(
             usage=accumulator.usage,
         )
 
+    if not accumulator.text and not accumulator.tool_log:
+        # The stream ended without producing anything. The changelog has
+        # claimed since 0.3.0 that this is reported rather than passed off as
+        # success; it was not, and an empty assistant bubble was appended to
+        # the transcript instead. Whatever went wrong, silence is the one
+        # outcome the user cannot act on.
+        logger.warning("Turn produced no output at all")
+        return QueryResult(
+            error="The agent produced no output. Check the logs, then try again.",
+            usage=accumulator.usage,
+        )
+
     return QueryResult(
         text=accumulator.text,
         tool_log=accumulator.tool_log,

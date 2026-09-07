@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from mcp_agent import auth  # noqa: E402
-from mcp_agent.agent import build_agent, discover_tools, run_query  # noqa: E402
+from mcp_agent.agent import build_agent, discover_tools  # noqa: E402
 from mcp_agent.config import (  # noqa: E402
     ConfigError,
     allowed_commands,
@@ -37,6 +37,7 @@ from mcp_agent.models import (  # noqa: E402
 )
 from mcp_agent.runtime import run_sync  # noqa: E402
 from mcp_agent.state import AppState  # noqa: E402
+from mcp_agent.turns import Turn, TurnEvent  # noqa: E402
 from mcp_agent.usage import TokenUsage  # noqa: E402
 
 # `override=False` so a real environment variable (from Compose, Kubernetes or a
@@ -162,21 +163,21 @@ st.markdown("✨ Ask questions to the ReAct agent that utilizes MCP tools.")
 # --- Rendering ----------------------------------------------------------------
 
 
-class StreamlitRenderer:
-    """Writes streamed output into two Streamlit placeholders."""
+def draw(event: TurnEvent, text_placeholder: Any, tool_placeholder: Any) -> None:
+    """Draw one streamed event.
 
-    def __init__(self, text_placeholder: Any, tool_placeholder: Any) -> None:
-        self._text = text_placeholder
-        self._tool = tool_placeholder
+    Called from the script thread only. The agent runs on the background loop
+    and hands its output over as data — see :mod:`mcp_agent.turns` for why
+    drawing from there raises on every write.
+    """
+    if event.kind == "text":
+        text_placeholder.markdown(event.payload)
+        return
 
-    def on_text(self, text: str) -> None:
-        self._text.markdown(text)
-
-    def on_tool(self, tool_log: str) -> None:
-        with self._tool.expander("🔧 Tool Call Information", expanded=True):
-            # st.code, not st.markdown: tool output is untrusted and a literal
-            # fence inside it would otherwise escape into live markdown.
-            st.code(tool_log, language="json")
+    with tool_placeholder.expander("🔧 Tool Call Information", expanded=True):
+        # st.code, not st.markdown: tool output is untrusted and a literal
+        # fence inside it would otherwise escape into live markdown.
+        st.code(event.payload, language="json")
 
 
 def render_usage(usage: TokenUsage) -> None:
@@ -509,23 +510,22 @@ if user_query:
         with st.chat_message("assistant", avatar="🤖"):
             tool_placeholder = st.empty()
             text_placeholder = st.empty()
-            renderer = StreamlitRenderer(text_placeholder, tool_placeholder)
 
-            # run_query applies the timeout itself and returns the text and
-            # tokens it managed to produce. Cancelling from out here instead
-            # would strand both inside its frame — which is what this code
-            # used to do, discarding exactly the longest, most expensive turns.
-            result = run_sync(
-                run_query(
-                    state.agent,
-                    user_query,
-                    renderer,
-                    thread_id=state.thread_id,
-                    recursion_limit=state.recursion_limit,
-                    timeout_seconds=state.timeout_seconds,
-                ),
-                timeout=state.timeout_seconds + 30,
+            # The turn runs on the background loop and streams events back
+            # here; every Streamlit call below happens on the script thread,
+            # which is the only thread allowed to make one. run_query still
+            # owns the deadline, so a turn cut short reports the text and
+            # tokens it managed to produce.
+            turn = Turn(
+                state.agent,
+                user_query,
+                thread_id=state.thread_id,
+                recursion_limit=state.recursion_limit,
+                timeout_seconds=state.timeout_seconds,
             )
+            for event in turn:
+                draw(event, text_placeholder, tool_placeholder)
+            result = turn.result
 
         state.usage = state.usage + result.usage
         state.history.append({"role": "user", "content": user_query})
