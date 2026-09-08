@@ -10,7 +10,7 @@ Nothing yet.
 
 ---
 
-## [0.4.1] — 2026-09-07
+## [0.4.1] — 2026-09-08
 
 Five runtime defects, found by reviewing 0.4.0 against the plan for the next
 version and then by mutating the fixes. The first had broken every turn since
