@@ -256,9 +256,11 @@ def servers_for(profile: Profile, config: dict[str, Any]) -> dict[str, Any]:
 _SEPARATORS = re.compile(r"&&|\|\||[;|&\n]")
 
 #: Constructs that run a command whose text is not in the line being checked.
-#: `$(...)`, backticks and `<(...)` all smuggle one past any amount of parsing,
-#: so they are refused outright rather than analysed.
-_SUBSTITUTION = re.compile(r"\$\(|`|<\(")
+#: `$(...)`, backticks and both directions of process substitution smuggle one
+#: past any amount of parsing, so they are refused outright rather than
+#: analysed. `>(` was missing from the first cut of this and is the reason an
+#: allowlist of nothing but `ls` still permitted `ls > >(sh -c id)`.
+_SUBSTITUTION = re.compile(r"\$\(|`|<\(|>\(")
 
 
 def command_segments(command: str) -> list[str]:
@@ -272,6 +274,25 @@ def command_segments(command: str) -> list[str]:
     return [segment.strip() for segment in _SEPARATORS.split(command) if segment.strip()]
 
 
+def _significant_words(segment: str) -> list[str]:
+    """The words of one command, with quote characters removed.
+
+    Quoting is one of the two ways an approval rule gets walked around:
+    `git "push"` and `git p"ush"` both run a push, and both slipped past a rule
+    of `git push` that compared raw words — verified by running them. Position
+    is the other way, and that one is handled by matching in order rather than
+    by adjacency; dropping option tokens here as well was tried and removed,
+    because an in-order match already steps over them and the extra rule
+    covered nothing a test could tell apart.
+    """
+    words: list[str] = []
+    for raw in segment.split():
+        word = raw.replace('"', "").replace("'", "")
+        if word:
+            words.append(word)
+    return words
+
+
 def needs_approval(command: str, settings: ShellSettings) -> bool:
     """Whether any command on this line matches one of the approval prefixes.
 
@@ -279,14 +300,32 @@ def needs_approval(command: str, settings: ShellSettings) -> bool:
     `git push` does. Prefix rather than equality, so the rule `git push` covers
     `git push --force origin main`; matched on whole words, so it does not also
     cover `git pushover`.
+
+    The rule's words must appear **in order** but need not be adjacent, and
+    options are dropped first. Prefix matching was not enough: `git -c x push`,
+    `git -C /tmp push` and `git "push"` all ran a push and all slipped past a
+    rule of `git push`, verified by running them. An option's separated value
+    (`-C` then `/tmp`) is an ordinary word to any splitter, so the only way to
+    stop position hiding a subcommand is to stop requiring adjacency.
+
+    This over-matches rather than under-matches — `git log push-notes` would
+    stop for a person under a `git push` rule. That is the safe direction, and
+    the alternative is a rule that reads as protection while not being any.
     """
     for segment in command_segments(command):
-        words = segment.split()
+        words = _significant_words(segment)
         for rule in settings.approve:
-            needle = rule.split()
-            if words[: len(needle)] == needle:
+            if _in_order(_significant_words(rule), words):
                 return True
     return False
+
+
+def _in_order(needle: list[str], words: list[str]) -> bool:
+    """Whether every word of `needle` appears in `words`, in order."""
+    if not needle:
+        return False
+    remaining = iter(words)
+    return all(word in remaining for word in needle)
 
 
 def is_allowed(command: str, settings: ShellSettings) -> bool:
@@ -306,4 +345,7 @@ def is_allowed(command: str, settings: ShellSettings) -> bool:
     segments = command_segments(command)
     if not segments:
         return False
-    return all(segment.split()[0] in settings.allow for segment in segments)
+    return all(
+        (words := _significant_words(segment)) and words[0] in settings.allow
+        for segment in segments
+    )

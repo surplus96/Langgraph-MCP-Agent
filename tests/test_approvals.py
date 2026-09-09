@@ -19,6 +19,7 @@ from mcp_agent.agent import ChunkRenderer, resume_query, run_query
 from mcp_agent.approvals import (
     DEFAULT_REJECTION,
     PendingApproval,
+    StoppedAction,
     approve,
     build_approval_middleware,
     pending_from_state,
@@ -105,7 +106,8 @@ def test_a_matching_command_stops_before_it_runs():
 
     assert result.awaiting_approval, result
     assert result.pending_approval.command == "git push origin main"
-    assert result.pending_approval.tool_name == "shell"
+    assert result.pending_approval.first.tool_name == "shell"
+    assert len(result.pending_approval) == 1
     assert ran == [], "the command ran before anyone approved it"
 
 
@@ -253,7 +255,9 @@ def test_a_pending_approval_outlives_the_page(tmp_path):
 
     asyncio.run(stop_it())
     assert asyncio.run(read_it_back()) == PendingApproval(
-        tool_name="shell", command="git push", args={"command": "git push"}
+        actions=(
+            StoppedAction(tool_name="shell", command="git push", args={"command": "git push"}),
+        )
     )
 
 
@@ -402,3 +406,142 @@ def test_a_second_command_needing_approval_stops_again():
     third = _resume(agent, "twice", approve(), Silent())
     assert not third.awaiting_approval
     assert ran == ["git push", "git reset"]
+
+
+# --- Two commands in one message ------------------------------------------------
+
+
+def test_two_stopped_commands_are_both_carried():
+    """The middleware raises one interrupt for every matching call in a message.
+
+    Answering it with one decision raises `ValueError` — it counts them. The
+    turn then takes the error branch before the interrupt is re-read, so the
+    page clears the pending approval over a graph that is still stopped and
+    re-enables the chat input on a conversation that cannot advance.
+    """
+    from langchain.agents import create_agent
+
+    profile = _profile(approve_rules=("git push", "git reset"))
+    model = ScriptedModel(
+        replies=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "shell", "args": {"command": "git push"}, "id": "c1"},
+                    {"name": "shell", "args": {"command": "git reset --hard"}, "id": "c2"},
+                ],
+            ),
+            AIMessage(content="Both done."),
+        ]
+    )
+    agent = create_agent(
+        model,
+        [shell],
+        checkpointer=InMemorySaver(),
+        middleware=build_approval_middleware(profile),
+    )
+
+    result = _turn(agent, "both", Silent())
+
+    assert result.awaiting_approval, result
+    assert len(result.pending_approval) == 2, result.pending_approval
+    assert [action.command for action in result.pending_approval.actions] == [
+        "git push",
+        "git reset --hard",
+    ]
+    assert ran == []
+
+
+def test_one_decision_is_sent_for_each_stopped_command():
+    """Answering a two-action interrupt with one decision is what raises."""
+    from langchain.agents import create_agent
+
+    profile = _profile(approve_rules=("git push", "git reset"))
+    model = ScriptedModel(
+        replies=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "shell", "args": {"command": "git push"}, "id": "c1"},
+                    {"name": "shell", "args": {"command": "git reset --hard"}, "id": "c2"},
+                ],
+            ),
+            AIMessage(content="Both done."),
+        ]
+    )
+    agent = create_agent(
+        model,
+        [shell],
+        checkpointer=InMemorySaver(),
+        middleware=build_approval_middleware(profile),
+    )
+
+    first = _turn(agent, "pair", Silent())
+    result = asyncio.run(
+        resume_query(
+            agent,
+            approve(),
+            Silent(),
+            thread_id="pair",
+            recursion_limit=10,
+            pending=first.pending_approval,
+        )
+    )
+
+    assert result.error is None, result.error
+    assert result.text == "Both done."
+    assert ran == ["git push", "git reset --hard"]
+
+
+def test_rejecting_a_pair_runs_neither():
+    from langchain.agents import create_agent
+
+    profile = _profile(approve_rules=("git push", "git reset"))
+    model = ScriptedModel(
+        replies=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "shell", "args": {"command": "git push"}, "id": "c1"},
+                    {"name": "shell", "args": {"command": "git reset --hard"}, "id": "c2"},
+                ],
+            ),
+            AIMessage(content="Understood."),
+        ]
+    )
+    agent = create_agent(
+        model,
+        [shell],
+        checkpointer=InMemorySaver(),
+        middleware=build_approval_middleware(profile),
+    )
+
+    first = _turn(agent, "pair2", Silent())
+    result = asyncio.run(
+        resume_query(
+            agent,
+            reject("Not now."),
+            Silent(),
+            thread_id="pair2",
+            recursion_limit=10,
+            pending=first.pending_approval,
+        )
+    )
+
+    assert ran == []
+    assert result.error is None
+    assert result.text == "Understood."
+
+
+def test_one_decision_is_produced_per_action():
+    from mcp_agent.approvals import PendingApproval, StoppedAction, decisions_for
+
+    pending = PendingApproval(actions=(StoppedAction("shell", "a"), StoppedAction("shell", "b")))
+    assert decisions_for(pending, approve()) == [{"type": "approve"}, {"type": "approve"}]
+
+
+def test_an_empty_pending_still_yields_one_decision():
+    """Defensive: sending zero decisions would raise just as surely as sending two."""
+    from mcp_agent.approvals import PendingApproval, decisions_for
+
+    assert decisions_for(PendingApproval(), approve()) == [{"type": "approve"}]

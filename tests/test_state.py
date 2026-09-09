@@ -55,9 +55,11 @@ def _result(**kwargs):
 
 
 def _pending(command: str = "git push"):
-    from mcp_agent.approvals import PendingApproval
+    from mcp_agent.approvals import PendingApproval, StoppedAction
 
-    return PendingApproval(tool_name="shell", command=command, args={"command": command})
+    return PendingApproval(
+        actions=(StoppedAction(tool_name="shell", command=command, args={"command": command}),)
+    )
 
 
 def test_a_finished_turn_closes_an_assistant_bubble():

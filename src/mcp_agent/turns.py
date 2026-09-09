@@ -117,6 +117,7 @@ class Turn:
         recursion_limit: int,
         timeout_seconds: float | None = None,
         grace_seconds: float = 30.0,
+        pending: Any = None,
     ) -> Turn:
         """A turn that continues one stopped for approval, with the answer.
 
@@ -134,6 +135,7 @@ class Turn:
                 thread_id=thread_id,
                 recursion_limit=recursion_limit,
                 timeout_seconds=timeout_seconds,
+                pending=pending,
             ),
             timeout_seconds=timeout_seconds,
             grace_seconds=grace_seconds,

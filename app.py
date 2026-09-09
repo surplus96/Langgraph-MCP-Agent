@@ -44,7 +44,7 @@ from mcp_agent.profiles import (  # noqa: E402
     profiles_path,
     servers_for,
 )
-from mcp_agent.rendering import draw  # noqa: E402
+from mcp_agent.rendering import draw, without_images  # noqa: E402
 from mcp_agent.runtime import run_sync  # noqa: E402
 from mcp_agent.sessions import tool_timeout  # noqa: E402
 from mcp_agent.shell import resolve_policy, shell_enabled  # noqa: E402
@@ -244,7 +244,9 @@ def render_history() -> None:
     for message in state.history:
         avatar = "🧑‍💻" if message["role"] == "user" else "🤖"
         with st.chat_message(message["role"], avatar=avatar):
-            st.markdown(message["content"])
+            # Replayed assistant text is model output too, and an image embed
+            # in it fetches on every reload, not just once.
+            st.markdown(without_images(message["content"]))
             tool_log = message.get("tool_log")
             if tool_log:
                 with st.expander("🔧 Tool Call Information", expanded=False):
@@ -590,8 +592,20 @@ def drive(turn: Turn) -> Any:
 if state.pending_approval is not None:
     waiting = state.pending_approval
     with st.chat_message("assistant", avatar="🤖"):
-        st.warning("⏸️ This command needs your approval before it runs.")
-        st.code(waiting.command or json.dumps(waiting.args, indent=2), language="bash")
+        if len(waiting) > 1:
+            st.warning(
+                f"⏸️ {len(waiting)} commands need your approval before they run. "
+                "One decision covers all of them."
+            )
+        else:
+            st.warning("⏸️ This command needs your approval before it runs.")
+
+        # Every stopped action, not just the first. They came from one model
+        # message and the graph will not move until all of them are answered,
+        # so showing one and hiding the rest would ask someone to decide about
+        # something they cannot see.
+        for action in waiting.actions:
+            st.code(action.command or json.dumps(action.args, indent=2), language="bash")
 
         approve_col, reject_col = st.columns(2)
         chosen = None
@@ -614,6 +628,7 @@ if state.pending_approval is not None:
                 thread_id=state.thread_id,
                 recursion_limit=state.recursion_limit,
                 timeout_seconds=state.timeout_seconds,
+                pending=waiting,
             )
         )
         state.record(outcome)

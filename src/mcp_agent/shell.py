@@ -12,10 +12,25 @@ three separate things rather than reinstated with one:
    alone gets nothing.
 2. **The boundary is the sandbox**, not the allowlist. The default execution
    policy is a container with no network, a read-only root filesystem and a
-   non-root user, so the exfiltration step of that attack has nowhere to go.
-3. **The allowlist is defence in depth.** It reads every command on the line
-   rather than the first, because the shell tool's own description tells the
-   model to chain with ``&&``.
+   non-root user, and it may only mount a directory the *operator* named
+   (``MCP_WORKSPACE_ROOT``) — a profile choosing that was found putting the
+   operator's home directory inside the sandbox, writable, because
+   ``--read-only`` does not cover bind mounts.
+
+   This closes the command's route out and not every route out. A security
+   review found the other one: the model's own reply renders as markdown, and
+   an image embed in it is fetched by the *browser*, which has a network even
+   when the container does not. That is why :func:`mcp_agent.rendering.without_images`
+   exists. An earlier version of this docstring said the exfiltration step "has
+   nowhere to go", which was true of the shell and not of the page, and it was
+   the sentence the whole feature's justification hung on.
+3. **The allowlist is defence in depth**, and it is only that. It reads every
+   command on the line rather than the first, because the shell tool's own
+   description tells the model to chain with ``&&``, and it refuses command
+   substitution outright rather than trying to parse it. It still cannot save
+   a profile that lists an interpreter: ``python``, ``make``, ``find`` and
+   ``pytest`` all run arbitrary code, so listing one is listing ``sh``. The
+   shipped examples name none of them, and a test enforces that.
 
 ``HostExecutionPolicy`` runs the model's commands as the Streamlit process. It
 is reachable, because an operator who has read the above may have a reason, and
@@ -26,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from mcp_agent.profiles import Profile, ShellPolicyName, is_allowed
@@ -35,7 +51,82 @@ logger = logging.getLogger(__name__)
 #: Image the sandbox runs in. Pinned rather than floating: `latest` would mean
 #: the tools a profile's allowlist names can change under it without anything
 #: in this repository changing.
-DEFAULT_SANDBOX_IMAGE = "python:3.12-alpine3.19"
+#:
+#: Debian-based, not Alpine. `ShellToolMiddleware` runs commands through
+#: `/bin/bash`, which Alpine does not ship, so an Alpine image fails every
+#: command. The failure would be safe — the session errors rather than running
+#: anything — but it would push an operator debugging "the shell does not
+#: work" toward MCP_SHELL_POLICY=host, which is the configuration this module
+#: exists to keep exceptional. Override with MCP_SANDBOX_IMAGE.
+DEFAULT_SANDBOX_IMAGE = "python:3.12-slim"
+
+
+def sandbox_image() -> str:
+    """The container image commands run in. Override with MCP_SANDBOX_IMAGE.
+
+    Operator-side, like every other decision about where a command runs: a
+    profile naming its own image would be choosing what is installed alongside
+    the commands it is allowed to run.
+    """
+    return os.environ.get("MCP_SANDBOX_IMAGE", "").strip() or DEFAULT_SANDBOX_IMAGE
+
+
+def workspace_root() -> str | None:
+    """The one directory a profile may mount, or None if the operator set none.
+
+    Without this a profile — a JSON file someone may have been handed — chooses
+    what is bind-mounted into the container, and `--read-only` does not apply
+    to bind mounts. A security review demonstrated `workspace_root: "/root"`
+    producing `docker run -v /root:/root`, which puts the operator's home
+    directory inside the sandbox, writable.
+    """
+    return os.environ.get("MCP_WORKSPACE_ROOT", "").strip() or None
+
+
+def resolve_workspace(profile: Profile) -> str | None:
+    """Where this profile's commands run, once the operator's limit is applied.
+
+    Returns None when the profile asked for nothing, when the operator set no
+    root, or when the profile asked for somewhere outside it. None means
+    `ShellToolMiddleware` uses a temporary directory of its own, which is the
+    safe answer to "I could not honour that": the shell still works, and it
+    works somewhere that holds nothing.
+    """
+    wanted = profile.shell.workspace_root
+    if not wanted:
+        return None
+
+    root = workspace_root()
+    if root is None:
+        logger.warning(
+            "Profile %r asks for workspace %r but MCP_WORKSPACE_ROOT is not set; "
+            "running in a temporary directory instead.",
+            profile.name,
+            wanted,
+        )
+        return None
+
+    try:
+        resolved = Path(wanted).resolve()
+        limit = Path(root).resolve()
+    except OSError as exc:  # pragma: no cover - resolution is filesystem-dependent
+        logger.warning("Could not resolve workspace %r: %s", wanted, exc)
+        return None
+
+    # `is_relative_to` and not a string prefix: `/workspace-other` starts with
+    # `/workspace` as text and is a different directory.
+    if resolved != limit and not resolved.is_relative_to(limit):
+        logger.warning(
+            "Profile %r asks for workspace %s, which is outside MCP_WORKSPACE_ROOT=%s; "
+            "running in a temporary directory instead.",
+            profile.name,
+            resolved,
+            limit,
+        )
+        return None
+
+    return str(resolved)
+
 
 #: The tool `ShellToolMiddleware` registers. Named once because the allowlist
 #: guard has to recognise it, so a rename upstream breaks one place, not two.
@@ -45,6 +136,34 @@ SHELL_TOOL_NAME = "shell"
 #: stops most of what root would buy, and the two together mean a write has to
 #: go to the mounted workspace or nowhere.
 SANDBOX_USER = "nobody"
+
+
+#: Shapes that are almost certainly a credential, redacted out of shell output
+#: before the model sees it. Without these, `cat .env` puts a key into the
+#: model's context, into the transcript, and permanently into
+#: `data/checkpoints.db`, which is an unencrypted file on the mounted volume.
+#:
+#: Not a secret scanner. It catches the provider tokens this project's users
+#: are most likely to have lying about, and it is the last line rather than the
+#: first: the sandbox is why the file is not reachable in the first place.
+SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("anthropic_key", r"sk-ant-[A-Za-z0-9_\-]{16,}"),
+    ("openai_key", r"\bsk-[A-Za-z0-9]{20,}"),
+    ("github_token", r"\bgh[pousr]_[A-Za-z0-9]{16,}"),
+    ("aws_access_key", r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    ("slack_token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
+    ("private_key_block", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
+
+
+def secret_redactions() -> list[Any]:
+    """The redaction rules handed to the shell tool."""
+    from langchain.agents.middleware import RedactionRule
+
+    return [
+        RedactionRule(pii_type=name, strategy="redact", detector=pattern)
+        for name, pattern in SECRET_PATTERNS
+    ]
 
 
 def shell_enabled() -> bool:
@@ -116,7 +235,7 @@ def build_execution_policy(profile: Profile) -> Any:
         return HostExecutionPolicy(command_timeout=timeout)
 
     return DockerExecutionPolicy(
-        image=DEFAULT_SANDBOX_IMAGE,
+        image=sandbox_image(),
         command_timeout=timeout,
         network_enabled=False,
         read_only_rootfs=True,
@@ -155,7 +274,15 @@ def build_allowlist_guard(profile: Profile) -> Any:
             return await handler(request)
 
         if not is_allowed(command, settings):
-            logger.warning("Refused shell command %r under profile %r", command, profile.name)
+            # The command itself is not logged. A refused line is exactly the
+            # one most likely to carry something an attacker planted, and
+            # refusing it should not be what writes that to disk. The first
+            # word is enough to see the shape of what is being attempted.
+            logger.warning(
+                "Refused a shell command starting %r under profile %r",
+                command.split()[0] if command.split() else "",
+                profile.name,
+            )
             return ToolMessage(
                 content=(
                     f"Refused: this profile does not permit that command. It allows "
@@ -192,8 +319,9 @@ def build_shell_middleware(profile: Profile) -> list[Any]:
     from langchain.agents.middleware import ShellToolMiddleware
 
     shell = ShellToolMiddleware(
-        workspace_root=profile.shell.workspace_root,
+        workspace_root=resolve_workspace(profile),
         execution_policy=build_execution_policy(profile),
+        redaction_rules=secret_redactions(),
     )
     # Order is behaviour. The allowlist decides whether a command may run at
     # all, so it comes first and a refusal never reaches a person for approval.

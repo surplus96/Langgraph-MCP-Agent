@@ -34,7 +34,7 @@ DEFAULT_REJECTION = "The user did not approve that command."
 
 
 @dataclass(frozen=True)
-class PendingApproval:
+class StoppedAction:
     """One action stopped in front of a person, as the page needs to show it."""
 
     tool_name: str
@@ -44,9 +44,50 @@ class PendingApproval:
     args: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PendingApproval:
+    """Everything stopped by one interrupt.
+
+    A list and not a single action, because a model may call two tools in one
+    message and the middleware then raises one interrupt carrying both. It
+    counts the decisions it gets back and raises `ValueError` when the number
+    does not match, so answering a two-action interrupt with one decision
+    wedges the thread: the graph stays interrupted, `_drive` returns the error
+    branch before the interrupt is re-read, and the page clears the pending
+    approval over a conversation that cannot advance. Found by review, not by
+    running — parallel tool calls are routine, and a persistent shell session
+    makes them likelier.
+    """
+
+    actions: tuple[StoppedAction, ...] = ()
+
+    @property
+    def first(self) -> StoppedAction | None:
+        return self.actions[0] if self.actions else None
+
+    @property
+    def command(self) -> str:
+        """The command, when exactly one action is stopped."""
+        return self.actions[0].command if len(self.actions) == 1 else ""
+
+    def __len__(self) -> int:
+        return len(self.actions)
+
+
 def approve() -> dict[str, Any]:
     """The decision that lets the command run."""
     return {"type": "approve"}
+
+
+def decisions_for(pending: PendingApproval, decision: dict[str, Any]) -> list[dict[str, Any]]:
+    """One decision per stopped action, which is what the middleware demands.
+
+    The page offers a single Approve/Reject for the whole interrupt rather than
+    one per action: they arrived in the same model message and a person reading
+    two commands is deciding about the pair. Sending one decision for two
+    actions is what raises.
+    """
+    return [dict(decision) for _ in range(max(len(pending), 1))]
 
 
 def reject(message: str = "") -> dict[str, Any]:
@@ -125,17 +166,21 @@ def pending_from_state(snapshot: Any) -> PendingApproval | None:
         if not requests:
             continue
 
-        first = requests[0]
-        if not isinstance(first, dict):
-            continue
-
-        args = first.get("args") or {}
-        command = args.get("command") if isinstance(args, dict) else None
-        return PendingApproval(
-            tool_name=str(first.get("name", "")),
-            command=str(command or ""),
-            args=dict(args) if isinstance(args, dict) else {},
-        )
+        actions = []
+        for request in requests:
+            if not isinstance(request, dict):
+                continue
+            args = request.get("args") or {}
+            args = args if isinstance(args, dict) else {}
+            actions.append(
+                StoppedAction(
+                    tool_name=str(request.get("name", "")),
+                    command=str(args.get("command") or ""),
+                    args=dict(args),
+                )
+            )
+        if actions:
+            return PendingApproval(actions=tuple(actions))
 
     if interrupts:
         logger.warning("The graph is interrupted but no action request could be read from it")

@@ -15,7 +15,7 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from mcp_agent.approvals import PendingApproval, pending_from_state
+from mcp_agent.approvals import PendingApproval, decisions_for, pending_from_state
 from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, ModelSpec, build_model
 from mcp_agent.profiles import DEFAULT_PROFILE, Profile
 from mcp_agent.shell import build_shell_middleware
@@ -399,6 +399,7 @@ async def resume_query(
     thread_id: str,
     recursion_limit: int,
     timeout_seconds: float | None = None,
+    pending: PendingApproval | None = None,
 ) -> QueryResult:
     """Continue a turn that stopped for approval, with the decision made.
 
@@ -409,9 +410,14 @@ async def resume_query(
     """
     from langgraph.types import Command
 
+    # One decision per stopped action. The middleware raises when the counts
+    # disagree, and a model that called two tools in one message raises one
+    # interrupt for both.
+    answers = decisions_for(pending, decision) if pending is not None else [decision]
+
     return await _drive(
         agent,
-        Command(resume={"decisions": [decision]}),
+        Command(resume={"decisions": answers}),
         renderer,
         thread_id=thread_id,
         recursion_limit=recursion_limit,

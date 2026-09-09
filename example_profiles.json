@@ -4,33 +4,33 @@
     "mcp_servers": null
   },
   "repository": {
-    "description": "Work inside a checked-out project: read it, run its tests, commit.",
-    "system_prompt": "You are working inside a git repository. Read before you write, and run the project's own checks before you claim a change works.",
+    "description": "Read a checked-out project and its history. No interpreters: see the note in docs/PROFILES.md.",
+    "system_prompt": "You are working inside a git repository. Read before you write, and say plainly when you cannot verify something rather than assuming it.",
     "mcp_servers": ["git", "filesystem"],
     "shell": {
       "enabled": true,
       "policy": "docker",
       "workspace_root": "/workspace",
-      "allow": ["git", "ls", "cat", "rg", "find", "pytest", "make"],
-      "approve": ["git push", "git reset --hard", "rm"]
+      "allow": ["git", "ls", "cat", "head", "tail", "wc", "rg", "diff"],
+      "approve": ["git push", "git reset", "git clean", "git checkout"]
     },
     "limits": { "tool_calls_per_run": 40, "model_calls_per_run": 25 }
   },
   "analysis": {
-    "description": "Read data and compute over it. No network inside the sandbox.",
-    "system_prompt": "You are analysing data. State the shape of what you loaded before drawing conclusions from it, and show the computation rather than only its result.",
+    "description": "Read data files and summarise them. Reading only — computing over them needs an interpreter, which this deliberately does not have.",
+    "system_prompt": "You are examining data. State the shape and provenance of what you read before drawing conclusions from it.",
     "mcp_servers": ["filesystem"],
     "shell": {
       "enabled": true,
       "policy": "docker",
       "workspace_root": "/workspace",
-      "allow": ["python", "python3", "ls", "cat", "head", "wc"],
-      "approve": ["rm"]
+      "allow": ["ls", "cat", "head", "tail", "wc", "cut", "sort", "uniq", "rg"],
+      "approve": []
     },
     "limits": { "tool_calls_per_run": 60, "model_calls_per_run": 30 }
   },
   "research": {
-    "description": "Search and read. Deliberately no shell — the pair is the injection path.",
+    "description": "Search and read. Deliberately no shell — that pair is the injection path 0.2.0 removed.",
     "system_prompt": "You are researching. Cite what you read, and say plainly when a source does not answer the question.",
     "mcp_servers": ["search", "fetch"],
     "shell": { "enabled": false },

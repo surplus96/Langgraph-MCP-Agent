@@ -368,7 +368,7 @@ what comes back through the queue is drawn.
 
 ## Testing
 
-370 tests, none of which need a network or an API key. The parts that matter:
+427 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache

