@@ -37,6 +37,7 @@ from mcp_agent.models import (  # noqa: E402
 )
 from mcp_agent.profiles import (  # noqa: E402
     DEFAULT_PROFILE,
+    Profile,
     ProfileError,
     load_profiles,
     profiles_path,
@@ -251,7 +252,7 @@ def render_history() -> None:
 # --- Session initialization ---------------------------------------------------
 
 
-def initialize_session(mcp_config: dict[str, Any]) -> bool:
+def initialize_session(mcp_config: dict[str, Any], profile: Profile = DEFAULT_PROFILE) -> bool:
     """Connect to MCP servers and build the agent. Returns success."""
     try:
         with st.spinner("🔄 Connecting to MCP server..."):
@@ -262,6 +263,7 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
                     tools,
                     get_checkpointer(),
                     effort=state.selected_effort,
+                    profile=profile,
                 ),
                 timeout=state.timeout_seconds,
             )
@@ -500,7 +502,7 @@ with st.sidebar:
                 logger.error("Profile %r cannot be applied: %s", active_profile.name, exc)
                 st.error(f"❌ {exc}")
             else:
-                if initialize_session(selected):
+                if initialize_session(selected, active_profile):
                     st.success("✅ New settings have been applied.")
                     st.rerun()
 

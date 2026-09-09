@@ -15,7 +15,8 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, build_model
+from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, ModelSpec, build_model
+from mcp_agent.profiles import DEFAULT_PROFILE, Profile
 from mcp_agent.streaming import astream_graph
 from mcp_agent.usage import TokenUsage
 
@@ -233,45 +234,99 @@ async def discover_tools(mcp_config: dict[str, Any]) -> list[Any]:
     return pool.tools
 
 
+def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]:
+    """Assemble the middleware chain this profile asks for.
+
+    `create_agent` applies middleware as a chain, so the order below is
+    behaviour rather than style, and it is asserted in `tests/test_agent.py`
+    rather than left as a comment:
+
+    1. **Ceilings**, so a runaway is stopped before anything downstream spends
+       on it. `exit_behavior="end"` and not `"continue"` or `"error"`: ending
+       writes a `ToolMessage` for every call that was cut, which keeps the
+       tool_use/tool_result pair complete. That is the same invariant the
+       per-call timeout exists for — an unmatched tool call poisons the thread,
+       not just the turn.
+    2. **Summarization**, a safety net rather than a routine saving. It
+       rewrites history and so throws away the cached prefix, which is why its
+       trigger sits late.
+    3. **Prompt caching last**, so it sees the final shape of everything above
+       it. Three breakpoints: the system prompt's last block, the last tool
+       definition, and a top-level one following the growing message tail.
+
+    Steps 3 and 4 of the 0.5.0 plan add the shell and its approval gate between
+    the ceilings and summarization; the order they go in is recorded here when
+    they arrive, not invented then.
+    """
+    from langchain.agents.middleware import (
+        ModelCallLimitMiddleware,
+        SummarizationMiddleware,
+        ToolCallLimitMiddleware,
+    )
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+    chain: list[Any] = []
+
+    # Both constructors reject being given no limit at all, so a profile that
+    # sets neither gets no middleware rather than a disabled one.
+    if profile.limits.model_calls_per_run is not None:
+        chain.append(
+            ModelCallLimitMiddleware(
+                run_limit=profile.limits.model_calls_per_run, exit_behavior="end"
+            )
+        )
+    if profile.limits.tool_calls_per_run is not None:
+        chain.append(
+            ToolCallLimitMiddleware(
+                run_limit=profile.limits.tool_calls_per_run, exit_behavior="end"
+            )
+        )
+
+    chain.append(
+        SummarizationMiddleware(
+            model=model,
+            trigger=("tokens", int(spec.context_window * SUMMARIZE_AT_FRACTION)),
+        )
+    )
+    chain.append(AnthropicPromptCachingMiddleware(ttl=_prompt_cache_ttl()))
+    return chain
+
+
+def system_prompt_for(profile: Profile) -> str:
+    """The base prompt plus whatever the profile adds.
+
+    Appended rather than replaced: the base prompt carries the rules about tool
+    use that hold whatever the profile is for, and a profile that replaced it
+    would have to restate them to stay correct.
+    """
+    if not profile.system_prompt.strip():
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\n\n{profile.system_prompt.strip()}"
+
+
 async def build_agent(
     model_id: str,
     tools: list[Any],
     checkpointer: InMemorySaver,
     effort: Effort = DEFAULT_EFFORT,
+    profile: Profile = DEFAULT_PROFILE,
 ) -> AgentBundle:
     """Build the ReAct agent over already-discovered tools."""
     from langchain.agents import create_agent
-    from langchain.agents.middleware import SummarizationMiddleware
-    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
     spec = MODEL_REGISTRY[model_id]
     model = build_model(model_id, effort)
+    prompt = system_prompt_for(profile)
 
     agent = create_agent(
         model,
         tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=prompt,
         checkpointer=checkpointer,
-        # Sets three cache breakpoints: the system prompt's last block, the
-        # last tool definition (one trailing breakpoint covers the whole
-        # contiguous tool block), and a top-level one that follows the growing
-        # message tail. All were previously re-sent at full price on every ReAct
-        # iteration — up to `recursion_limit` times per user turn, not once.
-        middleware=[
-            # A safety net, not a routine cost saving. With a 1M context window
-            # a chat session realistically never reaches this, but without it a
-            # long one eventually fails outright on a context-length error
-            # instead of degrading. Summarizing rewrites history and so
-            # invalidates the cached prefix, which is why the trigger sits late.
-            SummarizationMiddleware(
-                model=model,
-                trigger=("tokens", int(spec.context_window * SUMMARIZE_AT_FRACTION)),
-            ),
-            AnthropicPromptCachingMiddleware(ttl=_prompt_cache_ttl()),
-        ],
+        middleware=build_middleware(profile, model, spec),
     )
 
-    prefix_chars = len(SYSTEM_PROMPT) + sum(
+    prefix_chars = len(prompt) + sum(
         len(json.dumps({"name": t.name, "description": t.description}, default=str)) for t in tools
     )
     return AgentBundle(

@@ -561,3 +561,49 @@ def test_a_profile_narrows_which_servers_are_opened(monkeypatch, tmp_path):
     assert not app.exception
     assert opened, "Apply Settings never reached tool discovery"
     assert list(opened[-1]) == ["git"], opened[-1]
+
+
+def test_the_selected_profile_reaches_the_agent(monkeypatch, tmp_path):
+    """The `app.py` -> `build_agent` hop, which nothing else observes.
+
+    Measured: dropping the profile at the call site left every other test
+    green, so the sidebar would name a profile while the agent was built from
+    the default — no ceilings, and none of the profile's own prompt.
+    """
+    import json
+
+    from mcp_agent.agent import AgentBundle
+    from mcp_agent.state import SESSION_KEY
+
+    (tmp_path / "config.json").write_text(json.dumps({}), encoding="utf-8")
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {
+                "description": "Just git.",
+                "system_prompt": "You are in a git repository.",
+                "limits": {"tool_calls_per_run": 7},
+            },
+        },
+    )
+
+    built: list = []
+
+    async def spy(model_id, tools, checkpointer, effort=None, profile=None):
+        built.append(profile)
+        return AgentBundle(agent=object(), tool_count=0, estimated_prefix_tokens=0)
+
+    monkeypatch.setattr("mcp_agent.agent.build_agent", spy)
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app.run()
+    [button for button in app.button if button.label == "Apply Settings"][0].click().run()
+
+    assert not app.exception
+    assert built, "Apply Settings never reached build_agent"
+    assert built[-1] is not None, "build_agent was called without a profile"
+    assert built[-1].name == "repository", built[-1]
+    assert built[-1].limits.tool_calls_per_run == 7
