@@ -503,3 +503,25 @@ def test_no_shipped_approval_rule_is_dead(monkeypatch):
             assert is_allowed(rule, profile.shell), (
                 f"{profile.name} has an approval rule {rule!r} its allowlist refuses"
             )
+
+
+# --- Todos and context editing, as profile fields --------------------------------
+
+
+def test_todos_default_off_and_are_a_boolean():
+    assert validate_profile("p", {}).todos is False
+    assert validate_profile("p", {"todos": True}).todos is True
+
+    with pytest.raises(ProfileError, match="must be true or false"):
+        validate_profile("p", {"todos": "yes"})
+
+
+def test_clearing_tool_output_is_off_unless_a_trigger_is_given():
+    assert validate_profile("p", {}).clear_tool_output_at is None
+    assert validate_profile("p", {"clear_tool_output_at": 50_000}).clear_tool_output_at == 50_000
+
+
+@pytest.mark.parametrize("bad", [0, -1, "50000", True, 1.5])
+def test_a_useless_clear_trigger_is_refused(bad):
+    with pytest.raises(ProfileError, match="positive int"):
+        validate_profile("p", {"clear_tool_output_at": bad})

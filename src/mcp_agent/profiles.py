@@ -80,6 +80,16 @@ class Profile:
     mcp_servers: tuple[str, ...] | None = None
     shell: ShellSettings = field(default_factory=ShellSettings)
     limits: Limits = field(default_factory=Limits)
+    #: Give the model a `write_todos` tool and the prompt that makes it plan
+    #: before acting. Off by default and not on a whim: it adds a tool
+    #: definition and roughly a page of system prompt to every request, which
+    #: is a real cost on a profile whose work is two commands long.
+    todos: bool = False
+    #: Drop old tool output once the conversation passes this many tokens.
+    #: None leaves every result in place. Worth setting for a profile whose
+    #: tools return a lot — a directory listing read forty turns ago is paid
+    #: for on every turn after it.
+    clear_tool_output_at: int | None = None
 
 
 #: What you get with no profiles file at all: every configured MCP server, no
@@ -186,6 +196,18 @@ def validate_profile(name: str, raw: Any) -> Profile:
         None if servers is None else _as_tuple(servers, field_name="mcp_servers", profile=name)
     )
 
+    todos = raw.get("todos", False)
+    if not isinstance(todos, bool):
+        raise ProfileError(f"Profile '{name}' field 'todos' must be true or false.")
+
+    clear_at = raw.get("clear_tool_output_at")
+    if clear_at is not None and (
+        not isinstance(clear_at, int) or isinstance(clear_at, bool) or clear_at < 1
+    ):
+        raise ProfileError(
+            f"Profile '{name}' field 'clear_tool_output_at' must be a positive int of tokens."
+        )
+
     return Profile(
         name=name,
         description=description,
@@ -193,6 +215,8 @@ def validate_profile(name: str, raw: Any) -> Profile:
         mcp_servers=mcp_servers,
         shell=_validate_shell(raw.get("shell", {}), profile=name),
         limits=_validate_limits(raw.get("limits", {}), profile=name),
+        todos=todos,
+        clear_tool_output_at=clear_at,
     )
 
 

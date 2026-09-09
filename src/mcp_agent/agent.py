@@ -251,38 +251,43 @@ def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]
     behaviour rather than style, and it is asserted in `tests/test_agent.py`
     rather than left as a comment:
 
-    1. **Ceilings**, so a runaway is stopped before anything downstream spends
+    1. **Todos**, if the profile asked for them, so the model plans before it
+       does anything the rest of the chain has to police.
+    2. **Ceilings**, so a runaway is stopped before anything downstream spends
        on it. `exit_behavior="end"` and not `"continue"` or `"error"`: ending
        writes a `ToolMessage` for every call that was cut, which keeps the
        tool_use/tool_result pair complete. That is the same invariant the
        per-call timeout exists for — an unmatched tool call poisons the thread,
        not just the turn.
-    2. **Summarization**, a safety net rather than a routine saving. It
-       rewrites history and so throws away the cached prefix, which is why its
-       trigger sits late.
-    2. **The shell**, if the profile and the operator both asked for one, with
-       its allowlist guard immediately before it so the guard wraps the tool
-       the middleware registers. After the ceilings, so a runaway is capped
+    3. **The shell**, if the profile and the operator both asked for one: its
+       allowlist guard, then the approval gate, then the tool itself. The guard
+       is first so a command that may not run never stops a person for a
+       decision that cannot matter. After the ceilings, so a runaway is capped
        before it reaches a command line.
-    3. **Summarization**, a safety net rather than a routine saving. It
-       rewrites history and so throws away the cached prefix, which is why its
-       trigger sits late.
-    4. **Prompt caching last**, so it sees the final shape of everything above
+    4. **Context editing**, if the profile asked for it. Before summarization
+       because it is the cheaper reclamation: dropping old tool output costs
+       nothing but the output, while summarizing spends a model call.
+    5. **Summarization**, a safety net rather than a routine saving. Its
+       trigger sits late for the same reason context editing sits before it —
+       both rewrite history, and both therefore throw away the cached prefix.
+    6. **Prompt caching last**, so it sees the final shape of everything above
        it. Three breakpoints: the system prompt's last block, the last tool
        definition, and a top-level one following the growing message tail.
-
-    Step 4 of the 0.5.0 plan adds the approval gate between the guard and the
-    shell; the order it goes in is recorded here when it arrives, not invented
-    then.
     """
     from langchain.agents.middleware import (
+        ClearToolUsesEdit,
+        ContextEditingMiddleware,
         ModelCallLimitMiddleware,
         SummarizationMiddleware,
+        TodoListMiddleware,
         ToolCallLimitMiddleware,
     )
     from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
     chain: list[Any] = []
+
+    if profile.todos:
+        chain.append(TodoListMiddleware())
 
     # Both constructors reject being given no limit at all, so a profile that
     # sets neither gets no middleware rather than a disabled one.
@@ -300,6 +305,27 @@ def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]
         )
 
     chain.extend(build_shell_middleware(profile))
+
+    if profile.clear_tool_output_at is not None:
+        chain.append(
+            ContextEditingMiddleware(
+                edits=[
+                    ClearToolUsesEdit(
+                        trigger=profile.clear_tool_output_at,
+                        # The most recent results are what the model is
+                        # reasoning about right now. Clearing those would make
+                        # it repeat the calls it just made, which costs more
+                        # than the tokens it saved.
+                        keep=3,
+                        # The originating call stays, so every cleared result
+                        # still has its tool_use — the pairing survives the
+                        # edit, which is the invariant everything else in this
+                        # chain is also protecting.
+                        clear_tool_inputs=False,
+                    )
+                ]
+            )
+        )
 
     chain.append(
         SummarizationMiddleware(

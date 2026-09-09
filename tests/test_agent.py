@@ -395,3 +395,112 @@ def test_the_profile_prompt_is_counted_in_the_cacheable_prefix(monkeypatch):
     )
 
     assert with_prompt.estimated_prefix_tokens > base.estimated_prefix_tokens
+
+
+# --- Todos and context editing ---------------------------------------------------
+
+
+def test_todos_are_off_unless_the_profile_asks():
+    """They add a tool definition and about a page of system prompt.
+
+    That is a real cost on a profile whose work is two commands long, and it
+    lands in the cached prefix, so it is opt-in rather than a default.
+    """
+    from mcp_agent.profiles import DEFAULT_PROFILE, Profile
+
+    assert "TodoListMiddleware" not in _names(DEFAULT_PROFILE)
+    assert "TodoListMiddleware" not in _names(Profile(name="p"))
+
+
+def test_a_profile_can_ask_for_todos():
+    from mcp_agent.profiles import Profile
+
+    assert "TodoListMiddleware" in _names(Profile(name="p", todos=True))
+
+
+def test_todos_come_first_so_the_model_plans_before_anything_polices_it():
+    from mcp_agent.profiles import Limits, Profile
+
+    names = _names(
+        Profile(name="p", todos=True, limits=Limits(tool_calls_per_run=5, model_calls_per_run=5))
+    )
+    assert names[0] == "TodoListMiddleware", names
+
+
+def test_context_editing_is_off_unless_the_profile_asks():
+    from mcp_agent.profiles import DEFAULT_PROFILE
+
+    assert "ContextEditingMiddleware" not in _names(DEFAULT_PROFILE)
+
+
+def test_a_profile_can_ask_for_old_tool_output_to_be_dropped():
+    from mcp_agent.profiles import Profile
+
+    assert "ContextEditingMiddleware" in _names(Profile(name="p", clear_tool_output_at=50_000))
+
+
+def test_context_editing_runs_before_summarization():
+    """Cheaper reclamation first.
+
+    Dropping old tool output costs nothing but the output; summarizing spends
+    a model call. Running them the other way round pays for the expensive one
+    to reclaim what the cheap one would have.
+    """
+    from mcp_agent.profiles import Profile
+
+    names = _names(Profile(name="p", clear_tool_output_at=50_000))
+    assert names.index("ContextEditingMiddleware") < names.index("SummarizationMiddleware")
+
+
+def test_the_profile_token_trigger_reaches_the_edit():
+    from mcp_agent.agent import build_middleware
+    from mcp_agent.profiles import Profile
+
+    chain = build_middleware(Profile(name="p", clear_tool_output_at=1234), _model(), _spec())
+    editing = [m for m in chain if type(m).__name__ == "ContextEditingMiddleware"][0]
+
+    assert [edit.trigger for edit in editing.edits] == [1234]
+
+
+def test_the_most_recent_tool_results_are_kept():
+    """They are what the model is reasoning about now.
+
+    Clearing them would make it repeat the calls it just made, which costs
+    more than the tokens the edit reclaimed.
+    """
+    from mcp_agent.agent import build_middleware
+    from mcp_agent.profiles import Profile
+
+    chain = build_middleware(Profile(name="p", clear_tool_output_at=1000), _model(), _spec())
+    edit = [m for m in chain if type(m).__name__ == "ContextEditingMiddleware"][0].edits[0]
+
+    assert edit.keep >= 1
+    assert edit.clear_tool_inputs is False, (
+        "clearing the originating call would strand the cleared result"
+    )
+
+
+def test_the_whole_chain_in_order():
+    """Everything a profile can ask for, at once, in the order it goes in.
+
+    Asserted as one list rather than as pairwise comparisons: a reorder during
+    a refactor moves one entry, and the pairwise version only notices if the
+    pair it happened to check is the pair that moved.
+    """
+    from mcp_agent.profiles import Limits, Profile
+
+    everything = Profile(
+        name="p",
+        todos=True,
+        clear_tool_output_at=50_000,
+        limits=Limits(tool_calls_per_run=10, model_calls_per_run=5),
+    )
+
+    assert _names(everything) == [
+        "TodoListMiddleware",
+        "ModelCallLimitMiddleware",
+        "ToolCallLimitMiddleware",
+        "ContextEditingMiddleware",
+        "SummarizationMiddleware",
+        "AnthropicPromptCachingMiddleware",
+    ]
