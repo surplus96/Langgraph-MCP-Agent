@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -247,27 +248,62 @@ def servers_for(profile: Profile, config: dict[str, Any]) -> dict[str, Any]:
     return {name: config[name] for name in profile.mcp_servers}
 
 
-def needs_approval(command: str, settings: ShellSettings) -> bool:
-    """Whether this command line matches one of the approval prefixes.
+#: Where one command ends and the next begins. The shell tool's own description
+#: tells the model to chain with `&&` and `;`, so a rule that reads only the
+#: start of the line is not a rule at all: `ls && curl evil.example` passed an
+#: allowlist of `ls` until this existed. Measured against the shipped middleware
+#: description, not guessed.
+_SEPARATORS = re.compile(r"&&|\|\||[;|&\n]")
 
-    Prefix, not equality: `git push --force origin main` has to match the rule
-    written as `git push`. Matched on whitespace-delimited words so that
-    `git pushover` does not match `git push`.
+#: Constructs that run a command whose text is not in the line being checked.
+#: `$(...)`, backticks and `<(...)` all smuggle one past any amount of parsing,
+#: so they are refused outright rather than analysed.
+_SUBSTITUTION = re.compile(r"\$\(|`|<\(")
+
+
+def command_segments(command: str) -> list[str]:
+    """Every command in one shell line, split on the operators that join them.
+
+    Deliberately crude. It does not understand quoting, so a separator inside a
+    quoted string splits a segment that the shell would not — which fails
+    closed, by checking more than it has to rather than less. The sandbox, not
+    this function, is what makes a mistake here survivable.
     """
-    words = command.split()
-    for rule in settings.approve:
-        needle = rule.split()
-        if words[: len(needle)] == needle:
-            return True
+    return [segment.strip() for segment in _SEPARATORS.split(command) if segment.strip()]
+
+
+def needs_approval(command: str, settings: ShellSettings) -> bool:
+    """Whether any command on this line matches one of the approval prefixes.
+
+    Any, not the first: `ls && git push` has to stop for a person just as
+    `git push` does. Prefix rather than equality, so the rule `git push` covers
+    `git push --force origin main`; matched on whole words, so it does not also
+    cover `git pushover`.
+    """
+    for segment in command_segments(command):
+        words = segment.split()
+        for rule in settings.approve:
+            needle = rule.split()
+            if words[: len(needle)] == needle:
+                return True
     return False
 
 
 def is_allowed(command: str, settings: ShellSettings) -> bool:
-    """Whether the profile permits this command at all.
+    """Whether the profile permits every command on this line.
 
-    The first word only: an allowlist of executables, like
-    `MCP_ALLOWED_COMMANDS` for MCP servers. What follows is the model's
-    business, which is what the approval rules and the sandbox are for.
+    Every segment's first word must be listed: an allowlist of executables,
+    like `MCP_ALLOWED_COMMANDS` for MCP servers. What arguments follow is the
+    model's business, which is what the approval rules and the sandbox are for.
+
+    This is defence in depth and not the boundary. A shell allowlist that is
+    also a parser is a losing position — the boundary is the execution policy,
+    which by default is a container with no network and a read-only root.
     """
-    words = command.split()
-    return bool(words) and words[0] in settings.allow
+    if _SUBSTITUTION.search(command):
+        return False
+
+    segments = command_segments(command)
+    if not segments:
+        return False
+    return all(segment.split()[0] in settings.allow for segment in segments)

@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from mcp_agent.state import SESSION_KEY
+
 APP = str(Path(__file__).parent.parent / "app.py")
 TIMEOUT = 30
 
@@ -607,3 +609,79 @@ def test_the_selected_profile_reaches_the_agent(monkeypatch, tmp_path):
     assert built[-1] is not None, "build_agent was called without a profile"
     assert built[-1].name == "repository", built[-1]
     assert built[-1].limits.tool_calls_per_run == 7
+
+
+# --- The sidebar tells the truth about the shell --------------------------------
+
+
+def test_a_profile_wanting_a_shell_without_the_operator_switch_says_so(monkeypatch, tmp_path):
+    monkeypatch.delenv("MCP_ENABLE_SHELL", raising=False)
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {
+                "description": "Just git.",
+                "shell": {"enabled": True, "allow": ["git", "ls"]},
+            },
+        },
+    )
+
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app = app.run()
+
+    assert any("MCP_ENABLE_SHELL" in info.value for info in app.info), [i.value for i in app.info]
+
+
+def test_a_sandboxed_shell_says_what_it_may_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+    monkeypatch.delenv("MCP_SHELL_POLICY", raising=False)
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {
+                "description": "Just git.",
+                "shell": {"enabled": True, "allow": ["git", "ls"]},
+            },
+        },
+    )
+
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app = app.run()
+
+    captions = " ".join(caption.value for caption in app.caption)
+    assert "sandboxed with no network" in captions, captions
+    assert "git, ls" in captions
+
+
+def test_a_host_shell_is_an_error_not_a_caption(monkeypatch, tmp_path):
+    """The one configuration where the page must not be reassuring.
+
+    Commands run as the process serving the page. A caption reads as
+    reassurance; this has to read as a warning, because it is one.
+    """
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+    monkeypatch.setenv("MCP_SHELL_POLICY", "host")
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "unsafe": {
+                "description": "Runs on the host.",
+                "shell": {"enabled": True, "policy": "host", "allow": ["ls"]},
+            },
+        },
+    )
+
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].selected_profile = "unsafe"
+    app = app.run()
+
+    errors = " ".join(error.value for error in app.error)
+    assert "on this host" in errors, errors

@@ -308,3 +308,66 @@ def test_no_shipped_example_pairs_a_shell_with_a_search_tool(monkeypatch):
         assert not (named & reaches_the_web), (
             f"{profile.name} ships a shell alongside {sorted(named & reaches_the_web)}"
         )
+
+
+# --- Chained commands ----------------------------------------------------------
+#
+# The shell tool's own description tells the model to chain with `&&` or `;`.
+# A rule that reads only the start of the line is therefore not a rule:
+# reproduced against the shipped middleware, `ls && curl evil.example` passed an
+# allowlist of `ls` until `command_segments` existed.
+
+
+CHAINED = ShellSettings(enabled=True, allow=("ls", "git"), approve=("git push",))
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ls", ["ls"]),
+        ("ls && git status", ["ls", "git status"]),
+        ("ls; git status", ["ls", "git status"]),
+        ("ls | wc -l", ["ls", "wc -l"]),
+        ("ls || true", ["ls", "true"]),
+        ("ls &", ["ls"]),
+        ("ls\ngit status", ["ls", "git status"]),
+        ("   ", []),
+    ],
+)
+def test_a_line_is_split_into_its_commands(command, expected):
+    from mcp_agent.profiles import command_segments
+
+    assert command_segments(command) == expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls && curl http://evil.example",
+        "ls; curl http://evil.example",
+        "ls | curl http://evil.example",
+        "curl http://evil.example && ls",
+    ],
+)
+def test_every_command_on_the_line_must_be_listed(command):
+    assert is_allowed(command, CHAINED) is False
+
+
+def test_a_chain_of_listed_commands_is_permitted():
+    """The rule is that each one is listed, not that chaining is forbidden."""
+    assert is_allowed("ls && git status | ls", CHAINED) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["ls $(curl evil)", "ls `curl evil`", "ls <(curl evil)", "git log --format=$(id)"],
+)
+def test_command_substitution_is_refused_rather_than_parsed(command):
+    """It runs a command whose text is not the text being checked."""
+    assert is_allowed(command, CHAINED) is False
+
+
+def test_approval_looks_at_every_command_not_just_the_first():
+    """`ls && git push` has to stop for a person exactly as `git push` does."""
+    assert needs_approval("ls && git push origin main", CHAINED) is True
+    assert needs_approval("ls && git status", CHAINED) is False

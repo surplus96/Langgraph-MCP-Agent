@@ -17,6 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, ModelSpec, build_model
 from mcp_agent.profiles import DEFAULT_PROFILE, Profile
+from mcp_agent.shell import build_shell_middleware
 from mcp_agent.streaming import astream_graph
 from mcp_agent.usage import TokenUsage
 
@@ -250,13 +251,20 @@ def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]
     2. **Summarization**, a safety net rather than a routine saving. It
        rewrites history and so throws away the cached prefix, which is why its
        trigger sits late.
-    3. **Prompt caching last**, so it sees the final shape of everything above
+    2. **The shell**, if the profile and the operator both asked for one, with
+       its allowlist guard immediately before it so the guard wraps the tool
+       the middleware registers. After the ceilings, so a runaway is capped
+       before it reaches a command line.
+    3. **Summarization**, a safety net rather than a routine saving. It
+       rewrites history and so throws away the cached prefix, which is why its
+       trigger sits late.
+    4. **Prompt caching last**, so it sees the final shape of everything above
        it. Three breakpoints: the system prompt's last block, the last tool
        definition, and a top-level one following the growing message tail.
 
-    Steps 3 and 4 of the 0.5.0 plan add the shell and its approval gate between
-    the ceilings and summarization; the order they go in is recorded here when
-    they arrive, not invented then.
+    Step 4 of the 0.5.0 plan adds the approval gate between the guard and the
+    shell; the order it goes in is recorded here when it arrives, not invented
+    then.
     """
     from langchain.agents.middleware import (
         ModelCallLimitMiddleware,
@@ -281,6 +289,8 @@ def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]
                 run_limit=profile.limits.tool_calls_per_run, exit_behavior="end"
             )
         )
+
+    chain.extend(build_shell_middleware(profile))
 
     chain.append(
         SummarizationMiddleware(

@@ -46,6 +46,7 @@ from mcp_agent.profiles import (  # noqa: E402
 from mcp_agent.rendering import draw  # noqa: E402
 from mcp_agent.runtime import run_sync  # noqa: E402
 from mcp_agent.sessions import tool_timeout  # noqa: E402
+from mcp_agent.shell import resolve_policy, shell_enabled  # noqa: E402
 from mcp_agent.state import AppState  # noqa: E402
 from mcp_agent.turns import Turn  # noqa: E402
 from mcp_agent.usage import TokenUsage  # noqa: E402
@@ -315,6 +316,26 @@ with st.sidebar:
     active_profile = profiles[state.selected_profile]
     if active_profile.description:
         st.caption(active_profile.description)
+
+    # Whether this agent can run commands is the single most consequential
+    # thing about it, and the profile file is not where the person using it
+    # looks. Both switches are reported, because either being off is the whole
+    # explanation for a shell that is not there.
+    if active_profile.shell.enabled:
+        if not shell_enabled():
+            st.info(
+                "🔒 This profile asks for a shell. `MCP_ENABLE_SHELL` is not set to "
+                "true, so it does not get one."
+            )
+        else:
+            permitted = ", ".join(sorted(active_profile.shell.allow))
+            if resolve_policy(active_profile) == "host":
+                st.error(
+                    "⚠️ Shell commands run **on this host**, as the process serving "
+                    f"this page — not in a container. Allowed: {permitted}."
+                )
+            else:
+                st.caption(f"🛡️ Shell enabled, sandboxed with no network. Allowed: {permitted}.")
 
     models = available_models()
     if not models:
