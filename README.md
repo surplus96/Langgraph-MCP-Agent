@@ -100,7 +100,7 @@ cp .env.example .env
    and publishes it unchanged.
 
 ```bash
-uv run streamlit run app.py
+uv run streamlit run app.py --server.port 8585
 ```
 
 ## Environment variables
@@ -114,7 +114,9 @@ uv run streamlit run app.py
 | `MCP_ALLOW_TOOL_EDIT` | No | `false` | Enables the in-app MCP tool editor. |
 | `MCP_ALLOWED_COMMANDS` | No | `npx,uvx,node,python,python3,docker` | Allowlist for MCP server `command` values. |
 | `MCP_CONFIG_PATH` | No | `config.json` | Where the MCP server configuration is stored. |
+| `MCP_TOOL_TIMEOUT` | No | `60` | Seconds — not milliseconds — one tool call may run. Must stay below the sidebar's turn limit (60–600s, default 120), or a call still running at the turn deadline leaves the conversation unusable. The app warns when the two conflict. |
 | `CHECKPOINT_DB_PATH` | No | `data/checkpoints.db` | Where conversations are stored so they survive a restart. `:memory:` disables persistence. |
+| `PROMPT_CACHE_TTL` | No | `1h` | Lifetime of the cached prompt prefix, `5m` or `1h`. Any other value warns and falls back to `1h`. |
 | `LOG_LEVEL` | No | `INFO` | Python logging level. |
 | `LANGSMITH_*` | No | tracing off | Read by the LangSmith SDK, not by this application. Enabling tracing sends every prompt, tool result and model response to a third party. |
 
@@ -160,7 +162,7 @@ uv sync              # install, including dev dependencies
 uv run ruff check .  # lint
 uv run ruff format . # format
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 150 tests
+uv run pytest -q     # 215 tests
 ```
 
 ## Usage
@@ -195,6 +197,7 @@ Settings** again to rebuild the agent.
 | [CHANGELOG.md](CHANGELOG.md) | What changed in this release. |
 | [CLAUDE.md](CLAUDE.md) | Working agreement for AI coding agents in this repository. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | The modernization plan this work followed, including what was deliberately deferred. |
+| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | **Proposal, not built.** The operation-agent design for the next version, and the decisions it is waiting on. |
 
 ## License
 

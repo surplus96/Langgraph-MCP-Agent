@@ -7,8 +7,8 @@ wrong.
 ## Orientation
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before touching
-`src/mcp_agent/sessions.py`, `runtime.py`, or the middleware wiring in
-`agent.py`. All three are load-bearing in ways that are not visible from the
+`src/mcp_agent/sessions.py`, `runtime.py`, `turns.py`, or the middleware wiring
+in `agent.py`. All four are load-bearing in ways that are not visible from the
 code alone, and each carries a comment recording the bug that shaped it. Those
 comments are the design record. Do not delete one because it "explains what the
 code already says" — it does not, it explains what the code is not doing.
@@ -20,7 +20,7 @@ uv sync                                   # install, dev deps included
 uv run streamlit run app.py --server.port 8585
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src/mcp_agent app.py
-uv run pytest -q                          # 150 tests, no network, no API key
+uv run pytest -q                          # 215 tests, no network, no API key
 uv run python scripts/check_models.py     # verify the registry against the live API
 ```
 

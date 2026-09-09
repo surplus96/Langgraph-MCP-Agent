@@ -30,6 +30,8 @@ src/mcp_agent/             The application. No Streamlit import below this line
   ├── config.py            Load, validate and persist the MCP server config.
   ├── usage.py             Token accounting.
   ├── checkpoints.py       Conversation state that outlives the process.
+  ├── turns.py             One turn, run on the loop, drawn on the caller's thread.
+  ├── rendering.py         Which pane a streamed event is drawn into, and with what.
   ├── streaming.py         Graph stream → callback.
   ├── runtime.py           The one background event loop.
   ├── auth.py              The login gate.
@@ -110,6 +112,27 @@ everything looking healthy until something calls a tool — and the raw failure
 that then reaches the model is `ClosedResourceError` with an empty message.
 Both defects were found by killing a real server, not by reading the code.
 
+`_guard()` also bounds each call (`MCP_TOOL_TIMEOUT`, default 60s). `run_query`
+bounds the *turn*; if that deadline lands mid-call, the model node is
+checkpointed with `tool_calls` and no `ToolMessage` follows — a sequence
+Anthropic rejects, rebuilt by every later turn on that thread. Bounding the
+call keeps the pair complete, because `ToolException` becomes an ordinary tool
+result. Set the value below the turn budget or the original failure returns.
+
+Tool names are namespaced by server. Without that, two servers exposing
+`search` collide and `create_agent` binds only one — verified: three tools in,
+two bound, with the sidebar still reporting three.
+
+The prefix is built by `namespaced()` rather than by the adapter's
+`tool_name_prefix`, which pastes the config key on unchecked. Anthropic rejects
+a *request* whose tool names do not match `^[a-zA-Z0-9_-]{1,64}$`, and the key
+is whatever the user pasted — Smithery's own snippets use
+`@smithery-ai/server-sequential-thinking` — so one such entry would cost every
+turn rather than one tool. `namespaced()` cleans the prefix and drops as much
+of it as it must to fit, keeping the tool's own name whole because that is what
+the model reasons about. Only the LangChain-side name changes; the adapter
+closes over the MCP tool's real name for the call itself.
+
 `_guard()` wraps every async tool at the one place the failure is observable
 (a tool with no `coroutine` is returned untouched rather than half-wrapped). It
 distinguishes transport death from an ordinary tool error by walking the `raise
@@ -158,6 +181,41 @@ Nothing in the API reports this. `AgentBundle.estimated_prefix_tokens` and
 below this model's floor" instead of showing an unexplained 0% hit rate. The
 estimate is deliberately conservative — an exact count needs the
 `count_tokens` endpoint, and a warning is cheaper than a silent no-op.
+
+### Streaming across the thread boundary
+
+The agent runs on the background loop; Streamlit only allows drawing from its
+script thread. Marshalling the whole turn to the loop — renderer included —
+means every `st.markdown` runs where Streamlit raises `NoSessionContext`, and
+`run_query` catches it like any other failure. That exception carries no
+message, so the symptom was a turn dying at its first chunk with an error whose
+reason was blank. It shipped in 0.3.0 and survived until a test finally drove a
+chat turn.
+
+`turns.py` moves events across as data: `Turn` runs the coroutine on the loop
+and hands `TurnEvent`s to whichever thread iterates it. Attaching a script-run
+context to the loop thread is the tempting one-liner and is worse — that thread
+is process-wide, so writes would land in whichever browser session attached
+last.
+
+Queued events are coalesced to the last of each kind. Each carries the full
+accumulated text or tool log rather than a delta, so the earlier ones are
+redundant.
+
+Iteration ends when the turn finishes **or** when the deadline
+(`timeout_seconds` plus a 30s grace) passes, and the deadline is checked
+*before* the wait as well as after it. Both matter, and each was found by
+mutation rather than by reading: the script thread sits inside that loop, so
+ending only on the future means a loop that stops answering holds the browser
+indefinitely — and checking only when the event queue runs dry leaves a stream
+that keeps producing unbounded, measured at 3.05s of events against a 0.10s
+deadline.
+
+The grace is what makes the two deadlines ordered rather than simultaneous.
+`Turn`'s clock starts at construction; `run_query`'s starts when the loop gets
+round to it, and a busy loop puts the whole gap between them. Without the
+grace, `Turn` wins that race and the page gets "did not respond" instead of the
+partial text and spent tokens `run_query` owns its timeout to preserve.
 
 ### Streaming and the timeout
 
@@ -288,26 +346,43 @@ different-looking one would be worse than showing none.
 
 ```
 user submits a prompt in app.py
-  └─ run_sync(run_query(...), timeout)            → background loop
-       └─ astream_graph(agent, ...)               streaming.py
-            └─ create_agent graph
-                 ├─ SummarizationMiddleware       (usually a no-op)
-                 ├─ AnthropicPromptCachingMiddleware
-                 ├─ model call                    → Anthropic
-                 └─ tool call                     → held MCP session (sessions.py)
-       └─ StreamAccumulator                       text, tool log, usage
-  └─ QueryResult → history, sidebar totals
+  └─ Turn(agent, query, ...)                      turns.py
+       └─ run_coroutine_threadsafe(run_query(…))  → background loop
+            └─ astream_graph(agent, ...)          streaming.py
+                 └─ create_agent graph
+                      ├─ SummarizationMiddleware  (usually a no-op)
+                      ├─ AnthropicPromptCachingMiddleware
+                      ├─ model call               → Anthropic
+                      └─ tool call                → held MCP session (sessions.py)
+            └─ StreamAccumulator                  text, tool log, usage
+       └─ TurnEvent queue → iterated on the script thread
+            └─ draw(event, ...)                   rendering.py
+  └─ turn.result → QueryResult → history, sidebar totals
 ```
+
+The first line of that used to read `run_sync(run_query(...), timeout)`, which
+is the bug 0.4.1 fixed: it marshals the renderer to the loop along with
+everything else, and Streamlit refuses to draw from there. The two-column shape
+above is the point — everything indented under the loop runs on it, and only
+what comes back through the queue is drawn.
 
 ## Testing
 
-150 tests, none of which need a network or an API key. The parts that matter:
+215 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache
   is *hit* still needs a live call; the sidebar reports that.
 - **`test_sessions.py`** covers the lifecycle, including a killed server.
 - **`test_app_smoke.py`** runs the actual script through `AppTest`.
+- **`test_version.py`** fails when `__version__`, `pyproject.toml` and the
+  Compose image tag disagree. They had drifted two releases apart, silently,
+  because nothing imports `__version__`.
+- **`test_rendering.py`** covers `draw`, which is why `draw` is here rather than
+  in `app.py`. Anything driving the script sees the page *after* `st.rerun()`,
+  rebuilt from the transcript, so every branch of it was free: tool output could
+  go through `st.markdown` — the markdown escape it exists to prevent — with the
+  whole suite green.
 
 The standard applied here is **mutation**: a test suite is only trusted once
 breaking the code has been shown to break the suite. Deleting the caching

@@ -10,6 +10,110 @@ Nothing yet.
 
 ---
 
+## [0.4.1] — 2026-09-09
+
+Ten runtime defects, found in three passes: reviewing 0.4.0 against the plan
+for the next version, mutating the fixes that came out of it, then checking the
+documentation against what the code had become. The first had broken every turn
+since 0.3.0. Four were introduced by the fixes above them and never released;
+the other six shipped.
+
+### Fixed
+
+- **Streamed output never reached the page.** `run_sync` marshalled the whole
+  turn to the background loop, renderer included, so every `st.markdown` ran on
+  a thread with no `ScriptRunContext` and Streamlit raised `NoSessionContext`.
+  `run_query` caught it like any other failure, and that exception carries no
+  message, so a turn died at its first chunk showing `Error during query
+  processing: ` with nothing after the colon. Events now cross the thread
+  boundary as data (`mcp_agent/turns.py`) and `app.py` draws them on the script
+  thread. Introduced in 0.3.0 when the background loop replaced `nest_asyncio`.
+- **A tool call running at the turn deadline made the conversation unusable.**
+  The model node was checkpointed with its `tool_calls` and no `ToolMessage`
+  followed — a sequence Anthropic rejects, rebuilt by every later turn on that
+  thread, escapable only by resetting. Tool calls are now bounded individually
+  (`MCP_TOOL_TIMEOUT`, default 60s) and a timeout becomes an ordinary tool
+  error the model can read.
+- **Two servers exposing the same tool name silently lost one.** Verified
+  against `create_agent`: three tools in, two bound, and the sidebar still
+  counted three. Tool names are namespaced by server, and a collision that
+  survives that is reported rather than dropped.
+- **The server prefix could produce a tool name the API rejects.** The first
+  cut of the namespacing above pasted the config key straight on. Anthropic
+  requires `^[a-zA-Z0-9_-]{1,64}$` and rejects the whole *request* when a name
+  fails it, so a key of the shape Smithery's own COPY button produces —
+  `@smithery-ai/server-sequential-thinking` — would have failed every turn
+  rather than one tool, and step 3 of `README.md` is an instruction to paste
+  exactly that. `namespaced()` now cleans the prefix and shortens it to fit,
+  keeping the tool's own name whole. Never released.
+- **`Turn`'s deadline was dead code.** It was consulted only when collecting
+  the result, which `app.py` reaches only after iteration has already ended, so
+  the guarantee it documented — that a stuck loop cannot hold the browser —
+  did not hold. Measured, not read: a stub that blocks the loop thread hung the
+  turn indefinitely. Iteration now consults it, and the collect waits out only
+  what is left of it. A second pass found the first fix incomplete: the check
+  sat in the "event queue is empty" branch, so a stream that keeps producing
+  was still unbounded — 3.05s of events against a 0.10s deadline. It is now
+  checked before the wait as well. Never released.
+- **`Turn` was free to stop forwarding the turn budget** to `run_query`, with
+  every test green. That timeout exists so a turn cut short still reports its
+  partial text and spent tokens; without it the only remaining bound reports
+  "did not respond" and discards both. Never released.
+- **A collision report named the wrong thing to fix.** Two configuration keys
+  that shorten to the same tool prefix were reported as "rename them at the
+  server", which is not where the problem is, and the failure's `server_name`
+  was filled with the *tool's* name, so the sidebar labelled a tool as a
+  server. It now tracks which servers produced each name and gives the remedy
+  that matches — including for a server whose tool names are entirely outside
+  `[a-zA-Z0-9_-]` and therefore all clean to the same string. Never released.
+- **A turn that produced nothing was reported as success**, appending an empty
+  assistant bubble. The changelog has claimed since 0.3.0 that this was fixed;
+  it was not.
+- **A tool was allowed to outlive the turn that called it, silently.** Both
+  bounds are configurable and their defaults meet exactly at 60s — the turn
+  slider's own minimum — so the state the documentation tells you to avoid was
+  one drag away with nothing saying you had arrived. The sidebar now says so.
+- **`__version__` said 0.3.0** while `pyproject.toml` and the Compose image tag
+  said 0.4.1. Nothing imports it, so nothing broke and nothing noticed for two
+  releases; it is now read from the installed distribution, and a test fails
+  when the three disagree.
+
+### Added
+
+- `tests/test_turns.py` — the first tests in this repository that drive a real
+  chat turn through the real script. Their absence is why a streaming path that
+  raised on every write shipped and stayed shipped.
+
+  A mutation pass over the first version of that file found 18 of 24 mutations
+  surviving, all of them in the streaming path the release is named after: the
+  turn ends in `st.rerun()`, so every assertion read a page rebuilt from the
+  transcript rather than from the events. Deleting the streaming loop from
+  `app.py` left the whole suite green. The file now also drives `Turn`
+  directly.
+
+  A second pass over *that* found 24 of 48 still surviving — the same hole one
+  level up, since `app.py` was held by a single spy watching iteration and
+  nothing else. Both rounds of survivors are now dead, checked one mutant at a
+  time.
+- Documentation corrections that were themselves defects. The turn diagram in
+  `docs/ARCHITECTURE.md` still drew `run_sync(run_query(...))` — the exact call
+  this release removed — and `CLAUDE.md` sends every agent to that file before
+  they touch this wiring, so the one diagram they read taught the bug. The
+  README screenshot was three versions stale: a retired model, slider ranges
+  that no longer exist, and a Registered Tools List containing
+  `desktop-commander` and `tavily-mcp` together — the shell plus web-search
+  pair the same README says was removed in 0.2.0 as a credential-exfiltration
+  path. Retaken against 0.4.1. `PROMPT_CACHE_TTL` and `MCP_CONFIG_PATH` were
+  read by the code and documented in no `.env.example`, and the Docker one had
+  not been given this release's or 0.4.0's variables at all.
+- `tests/test_rendering.py`, and `mcp_agent/rendering.py` for it to test.
+  `draw` moved out of `app.py` because nothing could reach it there: every one
+  of its branches could be broken with the suite green, including sending
+  untrusted tool output through `st.markdown`, which is the markdown escape the
+  comment beside it exists to prevent.
+
+---
+
 ## [0.4.0] — 2026-09-07
 
 Conversations now outlive the process, and the secret scan CI never actually
@@ -218,6 +322,7 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 No changelog was kept. See the commit history from `5cd21de` (2025-07-08)
 onward.
 
-[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.4.0...main
+[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.4.1...main
+[0.4.1]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.1
 [0.4.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.0
 [0.3.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.3.0

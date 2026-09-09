@@ -100,7 +100,7 @@ cp .env.example .env
    공개합니다.
 
 ```bash
-uv run streamlit run app.py
+uv run streamlit run app.py --server.port 8585
 ```
 
 ## 환경 변수
@@ -114,7 +114,9 @@ uv run streamlit run app.py
 | `MCP_ALLOW_TOOL_EDIT` | 아니오 | `false` | 앱 내 MCP 도구 편집기를 활성화합니다. |
 | `MCP_ALLOWED_COMMANDS` | 아니오 | `npx,uvx,node,python,python3,docker` | MCP 서버 `command` 허용 목록. |
 | `MCP_CONFIG_PATH` | 아니오 | `config.json` | MCP 서버 설정 파일 경로. |
+| `MCP_TOOL_TIMEOUT` | 아니오 | `60` | 툴 호출 하나가 돌 수 있는 시간(밀리초가 아니라 **초**). 사이드바의 턴 제한(60–600초, 기본 120)보다 낮아야 합니다 — 툴 실행 중에 턴 마감이 걸리면 결과 없는 툴 호출이 남아 그 대화가 이후로 못 쓰게 됩니다. 두 값이 충돌하면 앱이 경고합니다. |
 | `CHECKPOINT_DB_PATH` | 아니오 | `data/checkpoints.db` | 재시작 후에도 대화가 남도록 저장하는 위치. `:memory:` 로 두면 비활성화됩니다. |
+| `PROMPT_CACHE_TTL` | 아니오 | `1h` | 캐시된 프롬프트 프리픽스의 수명. `5m` 또는 `1h`만 유효하며, 다른 값은 경고 후 `1h`로 되돌아갑니다. |
 | `LOG_LEVEL` | 아니오 | `INFO` | 파이썬 로깅 레벨. |
 | `LANGSMITH_*` | 아니오 | 추적 꺼짐 | 이 애플리케이션이 아니라 LangSmith SDK가 읽습니다. 활성화하면 모든 프롬프트·도구 결과·모델 응답이 외부로 전송됩니다. |
 
@@ -160,7 +162,7 @@ uv sync              # 개발 의존성 포함 설치
 uv run ruff check .  # 린트
 uv run ruff format . # 포매팅
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 150개 테스트
+uv run pytest -q     # 215개 테스트
 ```
 
 ## 사용법
@@ -174,7 +176,8 @@ uv run pytest -q     # 150개 테스트
      누르면 "Registered Tools List"에 추가됩니다.
    - 편집기를 끈 상태라면 설정 파일을 직접 편집합니다.
 4. **Apply Settings** 를 눌러 에이전트를 새로 만듭니다. 사이드바에 인식된 도구
-   개수와 현재 모델이 표시됩니다.
+   개수와 현재 모델이 표시되고, 시작에 실패한 서버가 있으면 그 이름도 함께
+   표시됩니다.
 5. 채팅창에서 질문합니다. 도구 호출 내역은 답변 아래 접이식 패널에 표시됩니다.
 
 모델이나 도구 설정을 바꾼 뒤에는 **Apply Settings** 를 다시 눌러야 에이전트가
@@ -193,6 +196,7 @@ uv run pytest -q     # 150개 테스트
 | [CHANGELOG.md](CHANGELOG.md) | 이번 릴리스의 변경 사항. |
 | [CLAUDE.md](CLAUDE.md) | 이 저장소에서 AI 코딩 에이전트가 지켜야 할 작업 규약. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 이 작업이 따른 현대화 계획과, 의도적으로 미룬 항목. |
+| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | **제안 단계이며 아직 구현되지 않음.** 다음 버전의 오퍼레이션 에이전트 설계와, 승인이 필요한 결정 사항. |
 
 ## 라이선스
 
