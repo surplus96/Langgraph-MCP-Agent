@@ -60,9 +60,10 @@ imports it, and that import must not pull in `langchain`, `langgraph`, Streamlit
 or an event loop. `langchain_core` types are fine; it already imports one.
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing anything in
-`sessions.py`, `runtime.py`, or the middleware wiring in `agent.py`. Those three
-are load-bearing in non-obvious ways, and the comments explaining why are in the
-code.
+`sessions.py`, `runtime.py`, `turns.py`, or the middleware wiring in `agent.py`.
+Those four are load-bearing in non-obvious ways, and the comments explaining why
+are in the code. `turns.py` is the newest of them and the one whose obvious
+implementation is wrong for a reason nothing local tells you.
 
 ## Style
 

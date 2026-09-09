@@ -37,6 +37,7 @@ from mcp_agent.models import (  # noqa: E402
 )
 from mcp_agent.rendering import draw  # noqa: E402
 from mcp_agent.runtime import run_sync  # noqa: E402
+from mcp_agent.sessions import tool_timeout  # noqa: E402
 from mcp_agent.state import AppState  # noqa: E402
 from mcp_agent.turns import Turn  # noqa: E402
 from mcp_agent.usage import TokenUsage  # noqa: E402
@@ -325,6 +326,20 @@ with st.sidebar:
         step=30,
         help="How long to wait for the agent to finish a turn.",
     )
+
+    # The per-call bound has to expire first or it buys nothing: if the turn
+    # deadline lands while a tool is still running, the thread is checkpointed
+    # with a tool call and no result, and every later turn on it is rejected.
+    # Both are configurable and their defaults meet at 60s — the slider's
+    # minimum — so the conflict is reachable without anyone doing anything
+    # unusual, and nothing said so.
+    if tool_timeout() >= state.timeout_seconds:
+        st.warning(
+            f"⚠️ A tool may run for {tool_timeout():.0f}s but the turn is cut off at "
+            f"{state.timeout_seconds}s. A tool still running at that point leaves this "
+            "conversation unusable until it is reset. Raise the limit above, or lower "
+            "MCP_TOOL_TIMEOUT."
+        )
 
     state.recursion_limit = st.slider(
         "⏳ Recursion limit",

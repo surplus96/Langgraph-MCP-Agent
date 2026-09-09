@@ -232,3 +232,6 @@ before you register anything from them.
 | Server starts by hand but not here | Almost always a missing credential: the subprocess gets a fixed subset of the environment plus `env`, and nothing else. See [above](#the-subprocess-does-not-inherit-your-environment). |
 | `no longer responding` mid-conversation | The server process died. Apply Settings reconnects. |
 | Everything is slow, ~700 ms per call | Sessions are not being reused — the config is changing between calls. |
+| `did not finish within 60 seconds and was stopped` | The call exceeded `MCP_TOOL_TIMEOUT` (seconds, not milliseconds). Raise it, but keep it under the sidebar's turn limit. |
+| `N registered tools are named 'x'` | Two servers shorten to the same prefix, or one server's own tool names clean to the same string. The message names which servers to fix, and where. |
+| `The agent produced no output` | The stream ended with nothing in it. Check the logs — this is reported as an error rather than as an empty answer. |

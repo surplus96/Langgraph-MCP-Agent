@@ -422,3 +422,40 @@ def test_resetting_deletes_the_conversation_from_storage(monkeypatch, tmp_path):
     assert not app.exception
     assert _thread_param(app) != "doomed"
     assert asyncio.run(with_saver(lambda s: load_history(s, "doomed"))) == []
+
+
+# --- The two timeouts have to be ordered ---------------------------------------
+
+
+def test_a_tool_allowed_to_outlive_the_turn_is_flagged(monkeypatch):
+    """Their defaults meet exactly at the slider's minimum.
+
+    `MCP_TOOL_TIMEOUT` defaults to 60s and the turn slider's floor is 60s, so a
+    user who drags it down reaches a state the documentation tells them to
+    avoid, with nothing saying they have arrived. A tool still running at the
+    turn deadline leaves the thread checkpointed with a tool call and no
+    result, which Anthropic rejects on every later turn.
+    """
+    from mcp_agent.state import SESSION_KEY
+
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", "120")
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].timeout_seconds = 60
+    app.run()
+
+    assert any("unusable until it is reset" in warning.value for warning in app.warning), [
+        w.value for w in app.warning
+    ]
+
+
+def test_no_warning_when_the_tool_bound_expires_first(monkeypatch):
+    from mcp_agent.state import SESSION_KEY
+
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", "30")
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].timeout_seconds = 120
+    app.run()
+
+    assert not any("unusable until it is reset" in warning.value for warning in app.warning)

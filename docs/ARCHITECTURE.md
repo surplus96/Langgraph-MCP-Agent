@@ -346,26 +346,38 @@ different-looking one would be worse than showing none.
 
 ```
 user submits a prompt in app.py
-  └─ run_sync(run_query(...), timeout)            → background loop
-       └─ astream_graph(agent, ...)               streaming.py
-            └─ create_agent graph
-                 ├─ SummarizationMiddleware       (usually a no-op)
-                 ├─ AnthropicPromptCachingMiddleware
-                 ├─ model call                    → Anthropic
-                 └─ tool call                     → held MCP session (sessions.py)
-       └─ StreamAccumulator                       text, tool log, usage
-  └─ QueryResult → history, sidebar totals
+  └─ Turn(agent, query, ...)                      turns.py
+       └─ run_coroutine_threadsafe(run_query(…))  → background loop
+            └─ astream_graph(agent, ...)          streaming.py
+                 └─ create_agent graph
+                      ├─ SummarizationMiddleware  (usually a no-op)
+                      ├─ AnthropicPromptCachingMiddleware
+                      ├─ model call               → Anthropic
+                      └─ tool call                → held MCP session (sessions.py)
+            └─ StreamAccumulator                  text, tool log, usage
+       └─ TurnEvent queue → iterated on the script thread
+            └─ draw(event, ...)                   rendering.py
+  └─ turn.result → QueryResult → history, sidebar totals
 ```
+
+The first line of that used to read `run_sync(run_query(...), timeout)`, which
+is the bug 0.4.1 fixed: it marshals the renderer to the loop along with
+everything else, and Streamlit refuses to draw from there. The two-column shape
+above is the point — everything indented under the loop runs on it, and only
+what comes back through the queue is drawn.
 
 ## Testing
 
-211 tests, none of which need a network or an API key. The parts that matter:
+215 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache
   is *hit* still needs a live call; the sidebar reports that.
 - **`test_sessions.py`** covers the lifecycle, including a killed server.
 - **`test_app_smoke.py`** runs the actual script through `AppTest`.
+- **`test_version.py`** fails when `__version__`, `pyproject.toml` and the
+  Compose image tag disagree. They had drifted two releases apart, silently,
+  because nothing imports `__version__`.
 - **`test_rendering.py`** covers `draw`, which is why `draw` is here rather than
   in `app.py`. Anything driving the script sees the page *after* `st.rerun()`,
   rebuilt from the transcript, so every branch of it was free: tool output could

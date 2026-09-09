@@ -10,12 +10,13 @@ Nothing yet.
 
 ---
 
-## [0.4.1] — 2026-09-08
+## [0.4.1] — 2026-09-09
 
-Five runtime defects, found by reviewing 0.4.0 against the plan for the next
-version and then by mutating the fixes. The first had broken every turn since
-0.3.0; the last two were introduced by the fixes above them and caught before
-release.
+Ten runtime defects, found in three passes: reviewing 0.4.0 against the plan
+for the next version, mutating the fixes that came out of it, then checking the
+documentation against what the code had become. The first had broken every turn
+since 0.3.0. Four were introduced by the fixes above them and never released;
+the other six shipped.
 
 ### Fixed
 
@@ -40,9 +41,10 @@ release.
 - **The server prefix could produce a tool name the API rejects.** The first
   cut of the namespacing above pasted the config key straight on. Anthropic
   requires `^[a-zA-Z0-9_-]{1,64}$` and rejects the whole *request* when a name
-  fails it, so a Smithery-style key — `@smithery-ai/server-sequential-thinking`,
-  which `README.md` tells users to paste — would have failed every turn rather
-  than one tool. `namespaced()` now cleans the prefix and shortens it to fit,
+  fails it, so a key of the shape Smithery's own COPY button produces —
+  `@smithery-ai/server-sequential-thinking` — would have failed every turn
+  rather than one tool, and step 3 of `README.md` is an instruction to paste
+  exactly that. `namespaced()` now cleans the prefix and shortens it to fit,
   keeping the tool's own name whole. Never released.
 - **`Turn`'s deadline was dead code.** It was consulted only when collecting
   the result, which `app.py` reaches only after iteration has already ended, so
@@ -67,6 +69,14 @@ release.
 - **A turn that produced nothing was reported as success**, appending an empty
   assistant bubble. The changelog has claimed since 0.3.0 that this was fixed;
   it was not.
+- **A tool was allowed to outlive the turn that called it, silently.** Both
+  bounds are configurable and their defaults meet exactly at 60s — the turn
+  slider's own minimum — so the state the documentation tells you to avoid was
+  one drag away with nothing saying you had arrived. The sidebar now says so.
+- **`__version__` said 0.3.0** while `pyproject.toml` and the Compose image tag
+  said 0.4.1. Nothing imports it, so nothing broke and nothing noticed for two
+  releases; it is now read from the installed distribution, and a test fails
+  when the three disagree.
 
 ### Added
 
@@ -85,6 +95,17 @@ release.
   level up, since `app.py` was held by a single spy watching iteration and
   nothing else. Both rounds of survivors are now dead, checked one mutant at a
   time.
+- Documentation corrections that were themselves defects. The turn diagram in
+  `docs/ARCHITECTURE.md` still drew `run_sync(run_query(...))` — the exact call
+  this release removed — and `CLAUDE.md` sends every agent to that file before
+  they touch this wiring, so the one diagram they read taught the bug. The
+  README screenshot was three versions stale: a retired model, slider ranges
+  that no longer exist, and a Registered Tools List containing
+  `desktop-commander` and `tavily-mcp` together — the shell plus web-search
+  pair the same README says was removed in 0.2.0 as a credential-exfiltration
+  path. Retaken against 0.4.1. `PROMPT_CACHE_TTL` and `MCP_CONFIG_PATH` were
+  read by the code and documented in no `.env.example`, and the Docker one had
+  not been given this release's or 0.4.0's variables at all.
 - `tests/test_rendering.py`, and `mcp_agent/rendering.py` for it to test.
   `draw` moved out of `app.py` because nothing could reach it there: every one
   of its branches could be broken with the suite green, including sending
