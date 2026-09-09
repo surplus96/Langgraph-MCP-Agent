@@ -4,7 +4,7 @@
     "mcp_servers": null
   },
   "repository": {
-    "description": "Read a checked-out project and its history. Plans with todos, and drops old command output once the conversation gets long.",
+    "description": "Work in a checked-out project and its history. Reads freely; every git command that writes — commit, rebase, merge, push, reset, clean, checkout, rm, branch -D, stash drop — stops for a person first. Plans with todos, and drops old command output once the conversation gets long.",
     "system_prompt": "You are working inside a git repository. Read before you write, and say plainly when you cannot verify something rather than assuming it.",
     "mcp_servers": [
       "git",
@@ -13,7 +13,7 @@
     "shell": {
       "enabled": true,
       "policy": "docker",
-      "workspace_root": "/workspace",
+      "workspace_root": "/srv/workspaces/project",
       "allow": [
         "git",
         "ls",
@@ -28,7 +28,13 @@
         "git push",
         "git reset",
         "git clean",
-        "git checkout"
+        "git checkout",
+        "git commit",
+        "git rebase",
+        "git merge",
+        "git rm",
+        "git branch -D",
+        "git stash drop"
       ]
     },
     "limits": {
@@ -47,7 +53,7 @@
     "shell": {
       "enabled": true,
       "policy": "docker",
-      "workspace_root": "/workspace",
+      "workspace_root": "/srv/workspaces/project",
       "allow": [
         "ls",
         "cat",

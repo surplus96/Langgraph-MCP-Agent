@@ -31,7 +31,12 @@ logger = logging.getLogger(__name__)
 #: app, at the cost of 2.0x on the writes themselves.
 def _prompt_cache_ttl() -> Literal["5m", "1h"]:
     """Read the configured TTL, falling back rather than failing on a typo."""
-    value = os.environ.get("PROMPT_CACHE_TTL", "1h").strip()
+    # `.get(..., "1h")` was wrong: `docker-compose.yaml` passes
+    # `PROMPT_CACHE_TTL=${PROMPT_CACHE_TTL:-}`, which sets the variable to the
+    # empty string rather than leaving it unset, so the default never fired and
+    # every agent build under Compose logged the warning below. Read-then-`or`
+    # is the shape used in `shell.py` and `sessions.py` for the same reason.
+    value = os.environ.get("PROMPT_CACHE_TTL", "").strip() or "1h"
     if value in ("5m", "1h"):
         return value  # type: ignore[return-value]
     logger.warning("PROMPT_CACHE_TTL=%r is not '5m' or '1h'; using 1h", value)
@@ -260,10 +265,13 @@ def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]
        per-call timeout exists for — an unmatched tool call poisons the thread,
        not just the turn.
     3. **The shell**, if the profile and the operator both asked for one: its
-       allowlist guard, then the approval gate, then the tool itself. The guard
-       is first so a command that may not run never stops a person for a
-       decision that cannot matter. After the ceilings, so a runaway is capped
-       before it reaches a command line.
+       allowlist guard, then the approval gate, then the tool itself. After the
+       ceilings, so a runaway is capped before it reaches a command line. The
+       guard being listed first does *not* keep a refused command from stopping
+       a person for approval — the gate hooks `after_model` and the guard is a
+       `wrap_tool_call`, so they run in different phases and list order cannot
+       reach it. `approvals.py` re-checks the allowlist in its own predicate
+       for that reason.
     4. **Context editing**, if the profile asked for it. Before summarization
        because it is the cheaper reclamation: dropping old tool output costs
        nothing but the output, while summarizing spends a model call.

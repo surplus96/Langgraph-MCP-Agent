@@ -468,12 +468,15 @@ def test_an_empty_command_is_not_permitted():
     ],
 )
 def test_no_shipped_profile_permits_a_command_that_runs_other_commands(spawner, monkeypatch):
-    """Listing `python` is listing `sh`, and the first version of this file did.
+    """These probes exercise the argument denylist, not the allowlist.
 
-    A reviewer ran `python3 -c "__import__('os').system(...)"` against the
-    shipped `analysis` allowlist and got PWNED. The allowlist is defence in
-    depth rather than the boundary, but an example that permits an interpreter
-    is not defence in anything, and it is the file people copy.
+    Every one of them is refused whatever the allowlist says — `-c`, `-exec`
+    and a bare interpreter name are all handled in `is_allowed` itself. So this
+    test constrains that denylist and nothing else; it was measured, by adding
+    `python`, `find`, `tar` and `sh` to both shipped allowlists and watching it
+    stay green. What it does *not* do is stop an interpreter being listed —
+    `test_no_shipped_allowlist_names_an_interpreter` below is that test, and
+    the two were conflated in four places until a docs review separated them.
     """
     from pathlib import Path
 
@@ -484,6 +487,104 @@ def test_no_shipped_profile_permits_a_command_that_runs_other_commands(spawner, 
     for profile in load_profiles().values():
         if profile.shell.enabled:
             assert is_allowed(spawner, profile.shell) is False, f"{profile.name} permits {spawner}"
+
+
+#: Commands that run other commands. Naming one in an allowlist hands over
+#: everything the allowlist was written to withhold, and the argument denylist
+#: does not save you: `python script.py` and `tar -xf a.tar` carry no listed
+#: option. Not exhaustive — no such list is — but every entry here was reachable
+#: from a shipped example at some point in this file's history, or is one word
+#: away from one.
+_INTERPRETERS = frozenset(
+    """
+    sh bash zsh dash ksh csh fish python python2 python3 perl ruby node deno bun php lua
+    Rscript julia irb ipython env eval exec nohup setsid timeout time watch xargs parallel
+    find make cmake ninja just task pytest tox nox npm npx yarn pnpm pip pipx uv uvx poetry
+    cargo go gradle mvn ant sbt docker podman kubectl helm ssh scp rsync tar unzip 7z vim
+    vi nano emacs less more man awk gawk sed gdb lldb strace ltrace curl wget nc ncat socat
+    telnet
+    """.split()  # noqa: SIM905 - a literal here is one name per line, 80 lines of noise
+)
+
+
+def test_no_shipped_allowlist_names_an_interpreter(monkeypatch):
+    """Listing `python` is listing `sh`, and the first version of this file did.
+
+    A reviewer ran `python3 -c "__import__('os').system(...)"` against the
+    shipped `analysis` allowlist and got PWNED. The allowlist is defence in
+    depth rather than the boundary, but an example that permits an interpreter
+    is not defence in anything, and it is the file people copy.
+
+    This asserts on the allowlist *entries*, because that is what a future
+    edit changes. The probe test above cannot do it: those probes are refused
+    by the argument denylist whether or not `python` is listed, so it stayed
+    green through an allowlist with `python`, `find`, `tar` and `sh` in it.
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv(
+        "MCP_PROFILES_PATH", str(Path(__file__).parent.parent / "example_profiles.json")
+    )
+
+    for profile in load_profiles().values():
+        for entry in profile.shell.allow:
+            head = entry.split()[0] if entry.split() else entry
+            assert head not in _INTERPRETERS, (
+                f"{profile.name} allows {entry!r}, and {head} runs other commands"
+            )
+
+
+def test_the_interpreter_check_reads_the_allowlist_and_not_the_denylist():
+    """The check above must fail when an interpreter is listed. Measured here.
+
+    Without this, `_INTERPRETERS` could drift into a set that matches nothing
+    and the assertion above would pass by vacuity — which is exactly how the
+    probe test came to be trusted for a job it never did.
+    """
+    from mcp_agent.profiles import ShellSettings
+
+    listed = ShellSettings(enabled=True, allow=("ls", "python"))
+    heads = {entry.split()[0] for entry in listed.allow}
+    assert heads & _INTERPRETERS == {"python"}
+    assert is_allowed("python script.py", listed) is True
+
+
+def test_the_shipped_profiles_fit_the_workspace_root_the_env_examples_suggest():
+    """Two files that must agree, and did not.
+
+    `example_profiles.json` asked for `/workspace` while both `.env.example`
+    files suggested `MCP_WORKSPACE_ROOT=/srv/workspaces`. An operator following
+    both got a flagship profile whose workspace was silently refused — no
+    mount, `-w /`, read-only root — with only a log line to say so. Nothing
+    tied the two files together, so a documentation review found it rather than
+    the suite.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).parent.parent
+    suggested = set()
+    for name in (".env.example", "dockers/.env.example"):
+        text = (root / name).read_text()
+        found = re.search(r"^#\s*MCP_WORKSPACE_ROOT=(\S+)$", text, re.MULTILINE)
+        assert found, f"{name} no longer suggests an MCP_WORKSPACE_ROOT"
+        suggested.add(found.group(1))
+    assert len(suggested) == 1, f"the two .env.example files disagree: {suggested}"
+    limit = Path(suggested.pop())
+
+    import json
+
+    profiles = json.loads((root / "example_profiles.json").read_text())
+    asked = [
+        (name, body["shell"]["workspace_root"])
+        for name, body in profiles.items()
+        if body.get("shell", {}).get("workspace_root")
+    ]
+    assert asked, "no shipped profile asks for a workspace; this test is now vacuous"
+    for name, wanted in asked:
+        assert Path(wanted).is_relative_to(limit), (
+            f"profile {name} asks for {wanted}, outside the suggested {limit}"
+        )
 
 
 def test_no_shipped_approval_rule_is_dead(monkeypatch):

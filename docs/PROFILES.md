@@ -21,6 +21,17 @@ container sets it to `/app/data/profiles.json`, on the mounted volume — the
 image layer is read-only, so a file written there would not survive and could
 not be edited.
 
+To start from the shipped examples:
+
+```bash
+cp example_profiles.json profiles.json      # from source
+cp example_profiles.json data/profiles.json # under Compose
+```
+
+`profiles.json` is gitignored, as `config.json` and `.env` are, because a
+profile names directories and servers particular to one deployment.
+`example_profiles.json` is the copy that is tracked and reviewed.
+
 ## A profile in full
 
 ```json
@@ -32,7 +43,7 @@ not be edited.
     "shell": {
       "enabled": true,
       "policy": "docker",
-      "workspace_root": "/workspace",
+      "workspace_root": "/srv/workspaces/project",
       "allow": ["git", "ls", "cat", "rg"],
       "approve": ["git push", "git reset"],
       "command_timeout": 30
@@ -51,8 +62,8 @@ not be edited.
 | `mcp_servers` | `null` | Which servers from `config.json` to open. `null` means all of them. Naming one that does not exist is an error, not an omission. |
 | `shell.enabled` | `false` | See [The shell](#the-shell). |
 | `shell.policy` | `"docker"` | `docker` or `host`. |
-| `shell.workspace_root` | `null` | The directory to work in. Bounded by `MCP_WORKSPACE_ROOT`. |
-| `shell.allow` | `[]` | Executables this profile may run. Empty means none. |
+| `shell.workspace_root` | `null` | The directory to work in. Honoured only if inside `MCP_WORKSPACE_ROOT`; otherwise nothing is mounted. |
+| `shell.allow` | `[]` | Executables this profile may run. Empty is rejected when `shell.enabled` is true — a shell that may run nothing is a configuration mistake, not a safe default. |
 | `shell.approve` | `[]` | Command prefixes that stop for a person. |
 | `shell.command_timeout` | `30` | Seconds one command may run. Keep below `MCP_TOOL_TIMEOUT`. |
 | `limits.tool_calls_per_run` | `null` | Ceiling per run. `null` is no ceiling. |
@@ -71,7 +82,7 @@ model reads a page it was asked to summarise, the page tells it to run a
 command, the command sends a key somewhere. 0.5.0 makes the shell the point, so
 it is earned back rather than reinstated.
 
-### It takes two people to turn on
+### It takes two switches, in two places, to turn on
 
 The operator sets `MCP_ENABLE_SHELL=true` **and** the profile sets
 `shell.enabled`. Either alone gets nothing. The operator's half is checked in
@@ -91,9 +102,19 @@ and a non-root user. That is what makes a mistake in the allowlist survivable.
 
 The one directory it can see is bounded by `MCP_WORKSPACE_ROOT`. A profile
 naming somewhere outside it — or naming one when the operator set no root at
-all — gets a temporary directory instead. This is not caution for its own sake:
-a review demonstrated `workspace_root: "/root"` producing
-`docker run -v /root:/root`, and `--read-only` does not apply to bind mounts.
+all — is refused with a warning. This is not caution for its own sake: a review
+demonstrated `workspace_root: "/root"` producing `docker run -v /root:/root`,
+and `--read-only` does not apply to bind mounts.
+
+Refused means **no mount at all**, which is worth knowing before you rely on
+it. `ShellToolMiddleware` makes a host temporary directory, and
+`DockerExecutionPolicy` recognises its own prefix and declines to mount it — so
+the container runs `-w /` on a read-only root, and commands can read the image
+and write nowhere. Under the `host` policy the temporary directory *is* the
+working directory and is writable. Set `MCP_WORKSPACE_ROOT` if the profile
+needs to write: `example_profiles.json` asks for `/srv/workspaces/project`,
+which is inside the `/srv/workspaces` both `.env.example` files suggest, and a
+test asserts those two stay in step.
 
 ### The allowlist is defence in depth, and only that
 
@@ -109,7 +130,12 @@ existed.
 review demonstrated `python3 -c` and `find … -exec sh -c … +` against the first
 version of this project's own examples — note `-exec … +`, which needs no `;`
 and so gives a word-splitter nothing to catch. The shipped examples name none
-of them, and a test enforces it.
+of them, and `test_no_shipped_allowlist_names_an_interpreter` enforces it by
+reading the allowlist entries. The older probe test does not: it runs nine
+commands that the argument denylist refuses whatever the allowlist says, and it
+stayed green with `python`, `find`, `tar` and `sh` added to both shipped
+examples. Two tests, two different jobs — they were conflated in four places
+until a documentation review pulled them apart.
 
 **And that rule is not followable by inspection.** Plenty of ordinary commands
 become interpreters given the right option:
@@ -133,11 +159,16 @@ is called the boundary.
 `git push` stops for a person; `git status` does not. The rule's words must
 appear in order but need not be adjacent, because `git -c user.name=x push`,
 `git -C /tmp push` and `git "push"` all run a push and all walked past a rule
-that required adjacency. That means it over-matches — `git log push-notes`
-stops too — which is the safe direction.
+that required adjacency. That means it over-matches — `git log push` stops for
+a rule of `git push`, and so does `git diff push` — which is the safe
+direction. It matches whole words, so `git log push-notes` does *not* stop.
 
-A rule for a command the allowlist refuses can never fire; the guard refuses
-first, by design, so that nobody is asked to approve something that cannot run.
+A rule for a command the allowlist refuses can never fire, so that nobody is
+asked to approve something that would be refused anyway. That is done by the
+approval predicate checking the allowlist itself, not by the order the two are
+listed in: the gate hooks `after_model` and the guard runs at tool execution,
+so the gate goes first whatever the list says. A test written to prove
+otherwise failed against correct code, which is how this was established.
 
 ### What it still does not stop
 
@@ -155,7 +186,7 @@ until the conversation is deleted. That is a last line, not a scanner.
 | Variable | Default | Notes |
 |---|---|---|
 | `MCP_PROFILES_PATH` | `profiles.json` | Where profiles are read from. |
-| `MCP_ENABLE_SHELL` | `false` | Must be exactly `true`. |
+| `MCP_ENABLE_SHELL` | `false` | Must read `true` once stripped and lowercased — ` TRUE ` counts, `1` and `yes` do not. |
 | `MCP_SHELL_POLICY` | unset | `host` permits the host policy for profiles that ask for it. |
 | `MCP_WORKSPACE_ROOT` | unset | The one directory a profile may mount. |
 | `MCP_SANDBOX_IMAGE` | `python:3.12-slim` | Debian-based on purpose: commands run through `/bin/bash`, which Alpine does not ship. |
@@ -163,11 +194,23 @@ until the conversation is deleted. That is a last line, not a scanner.
 ## Verify the sandbox before trusting it
 
 This project's test suite cannot start a container, so the flags above are set
-and read but not observed running. Before enabling the shell anywhere real:
+and read but not observed running. Run this **where the app runs** — inside the
+container if you deployed with Compose, not on your laptop — and with the flags
+the policy actually passes:
 
 ```bash
-docker run --rm python:3.12-slim /bin/bash -c 'echo ok'
+docker run --rm --network none --read-only --user nobody \
+  python:3.12-slim /bin/bash -c 'echo ok'
 ```
+
+If that prints `ok`, the sandbox this project describes is available there. If
+`docker` is not found, the shell capability cannot run: **the image built by
+`dockers/Dockerfile` has no Docker CLI and no socket**, so a profile with
+`shell.enabled` under Compose will fail at the first command. Installing a
+Docker CLI and mounting the daemon socket into the app container hands that
+container control of the host daemon, which is a larger decision than this
+document can make for you — run the app on the host, or on a runtime you have
+deliberately given a sandbox, if you want the shell.
 
 If that fails, the sandbox has never run, and the pressure will be to reach for
 `MCP_SHELL_POLICY=host` — which is the configuration all of the above exists to

@@ -26,7 +26,9 @@ the reasoning behind it are in [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md);
   three profiles and share no code. **With no profiles file nothing changes** —
   there is exactly one profile, it opens every configured server and has no
   shell, and the sidebar shows no selector.
-- **A shell capability, off until two people turn it on.** The operator sets
+- **A shell capability, off until two separate switches say yes.** One is
+  operator-side and one is in the profile; the same person may hold both, but
+  neither file can turn it on alone. The operator sets
   `MCP_ENABLE_SHELL=true` and the profile sets `shell.enabled`; either alone
   builds nothing. Commands run in a container with no network, a read-only root
   and a non-root user, in a directory bounded by `MCP_WORKSPACE_ROOT`.
@@ -58,8 +60,13 @@ audited before release. What the audit found, all demonstrated by running it:
   than by adjacency, and over-match rather than under-match.
 - **The first version of `example_profiles.json` was self-defeating**, listing
   `python`, `make`, `find` and `pytest`. Listing an interpreter is listing
-  `sh`. Two tests now enforce that no shipped example does, and a third catches
-  an approval rule for a command the allowlist refuses — which can never fire.
+  `sh`. A test now reads the allowlist entries of every shipped profile and
+  refuses an interpreter among them, a second constrains the argument denylist
+  (`-c`, `-exec`, `--pre`, `ext::`) against nine spawning commands, and a third
+  catches an approval rule for a command the allowlist refuses — which can
+  never fire. The first two were one test until a documentation review measured
+  it: the probes are refused by the denylist whatever the allowlist says, so it
+  never constrained the allowlist it was written to guard.
 - **A profile chose what was bind-mounted into the sandbox.**
   `workspace_root: "/root"` produced `docker run -v /root:/root`, and
   `--read-only` does not cover bind mounts.
@@ -94,9 +101,19 @@ A second pre-release pass, this time over the tests rather than the code, found
 
 **Unverified:** no Docker daemon was available while building this, so the
 container isolation flags are set and read but were not observed running.
-Before enabling the shell, run
-`docker run --rm python:3.12-slim /bin/bash -c 'echo ok'` — the default image
-was Alpine until the audit, which ships no `/bin/bash`.
+Before enabling the shell, run this **where the app runs**, with the flags the
+policy actually passes:
+
+```bash
+docker run --rm --network none --read-only --user nobody \
+  python:3.12-slim /bin/bash -c 'echo ok'
+```
+
+The default image was Alpine until the audit, which ships no `/bin/bash`. And
+note where the app runs: **the image built by `dockers/Dockerfile` has no
+Docker CLI and the compose file mounts no socket**, so the shell capability
+cannot run under Compose at all. Giving the app container the host daemon would
+make a sandbox escape a host compromise, which is the opposite of the point.
 
 ### Fixed
 
@@ -108,6 +125,25 @@ was Alpine until the audit, which ships no `/bin/bash`.
 - Two tool calls in one model message raise a single interrupt carrying both,
   and answering it with one decision raises, wedging the thread. Every stopped
   action is now shown and answered. Never released.
+- Only the inline form of a markdown image was defused in assistant text, so
+  `![a][ref]` with a link definition kept the whole exfiltration route open
+  while the module docstring said it was shut. Both forms are now defused.
+  Never released.
+- `example_profiles.json` asked for `workspace_root: "/workspace"` while both
+  `.env.example` files suggested `MCP_WORKSPACE_ROOT=/srv/workspaces`, so an
+  operator following both got a flagship profile whose workspace was silently
+  refused — no mount, `-w /`, read-only root, a log line and nothing else. The
+  two now agree, and a test asserts they keep agreeing. Never released.
+- The `repository` example approved four git subcommands while its allowlist
+  permitted every one of them, so `git commit`, `git rebase`, `git merge`,
+  `git rm`, `git branch -D` and `git stash drop` ran with nobody asked. All of
+  them now stop, and the profile's description says so instead of claiming the
+  profile only reads. Never released.
+- `PROMPT_CACHE_TTL` fell back on a *typo* but not on an *empty* value, while
+  `docker-compose.yaml` passes `PROMPT_CACHE_TTL=${PROMPT_CACHE_TTL:-}` — which
+  sets it to the empty string. Every agent build under Compose logged a warning
+  about a value nobody typed. Read-then-`or`, matching `shell.py` and
+  `sessions.py`.
 
 ---
 

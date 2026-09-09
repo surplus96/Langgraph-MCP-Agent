@@ -62,8 +62,26 @@ or an event loop. `langchain_core` types are fine; it already imports one.
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing anything in
 `sessions.py`, `runtime.py`, `turns.py`, or the middleware wiring in `agent.py`.
 Those four are load-bearing in non-obvious ways, and the comments explaining why
-are in the code. `turns.py` is the newest of them and the one whose obvious
-implementation is wrong for a reason nothing local tells you.
+are in the code. `turns.py` is the one whose obvious implementation is wrong for
+a reason nothing local tells you.
+
+0.5.0 added three more, and [docs/PROFILES.md](docs/PROFILES.md) is their
+reference:
+
+- `profiles.py` — profiles as data, plus the allowlist and approval matching.
+  It parses command lines, so every change to it is a security change; the
+  comments say which review demonstrated which bypass.
+- `shell.py` — the shell capability. Two rules hold here and neither is
+  negotiable: it takes an operator switch **and** a profile field to enable, and
+  a profile may not reach `HostExecutionPolicy` or mount anything outside
+  `MCP_WORKSPACE_ROOT`. Never list an interpreter in a shipped example
+  allowlist; `test_no_shipped_allowlist_names_an_interpreter` is the test that
+  says so, and the nine-probe test beside it does not (it constrains the
+  argument denylist and stays green with `python` listed).
+- `approvals.py` — the human-in-the-loop gate. Its predicate re-checks the
+  allowlist, and that is not redundant: the gate hooks `after_model` while the
+  guard is a `wrap_tool_call`, so middleware list order cannot make the guard
+  run first.
 
 ## Style
 
@@ -152,7 +170,7 @@ how you got it.
 
 ## Secrets
 
-`config.json`, `.env` and `data/` are gitignored, and gitleaks runs both
+`config.json`, `profiles.json`, `.env` and `data/` are gitignored, and gitleaks runs both
 pre-commit and in CI. If gitleaks flags your commit, fix the commit — do not add
 a fingerprint to `.gitleaksignore`. That file is only for historical findings
 that have already been rotated, and each entry has to say so; CI fails a pull

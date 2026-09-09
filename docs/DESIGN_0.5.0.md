@@ -11,9 +11,12 @@ visible rather than editing away:
 - It said `Turn` would gain a third streamed event kind for a pending approval.
   An interrupt does not present that way — the stream ends normally and the
   interrupt is only visible afterwards in the checkpointed state.
-- It said list order would put the allowlist guard ahead of the approval gate.
-  It cannot: they hook different phases of the graph, so the interrupt fires
-  first whatever the order. The gate's predicate carries the ordering instead.
+- Its middleware order (§6) has no allowlist guard in it at all. The guard was
+  added while building, once it was clear the sandbox alone let a profile's
+  `allow` list mean nothing, and the natural assumption that listing it before
+  the approval gate would make it run first turned out to be wrong: they hook
+  different phases of the graph, so the interrupt fires first whatever the
+  order. The gate's predicate re-checks the allowlist instead.
 
 ## What is being asked for
 
@@ -98,13 +101,19 @@ loadable from the same volume:
   "shell": {
     "enabled": true,
     "policy": "docker",
-    "workspace_root": "/workspace",
-    "allow": ["git", "ls", "cat", "rg", "pytest"],
-    "approve": ["git push", "rm"]
+    "workspace_root": "/srv/workspaces/project",
+    "allow": ["git", "ls", "cat", "rg"],
+    "approve": ["git push", "git reset"]
   },
   "limits": { "tool_calls_per_run": 40, "model_calls_per_run": 25 }
 }
 ```
+
+(As drafted this snippet listed `pytest` in `allow` and `rm` in `approve`.
+Neither survived the build: `pytest` runs arbitrary Python, so listing it is
+listing `sh`, and an approval rule for a command the allowlist refuses can
+never fire. Both are now caught by tests. Corrected here because this snippet
+is the thing people copy.)
 
 This is what makes the thing industry-agnostic in a way a longer default prompt
 never would: a finance team, a lab and a game studio write three profiles and
@@ -172,6 +181,9 @@ ten servers on it.
 2. `ModelCallLimitMiddleware`, `ToolCallLimitMiddleware` — the runaway stops.
 3. `HumanInTheLoopMiddleware` — approval before execution.
 4. `ShellToolMiddleware` — the capability itself.
+
+   *(As built there is a third piece here, the allowlist guard, ahead of both —
+   see the note at the top of this document.)*
 5. `SummarizationMiddleware` — existing, late trigger.
 6. `AnthropicPromptCachingMiddleware` — existing, last so it sees the final shape.
 

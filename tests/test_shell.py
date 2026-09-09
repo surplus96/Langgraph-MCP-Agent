@@ -269,8 +269,9 @@ def test_a_profile_cannot_choose_what_gets_mounted(monkeypatch):
     `--read-only` covers the container's own layer, not bind mounts, so the
     mount is writable. A profile is a JSON file someone may have been handed;
     it must not be able to put the operator's home directory inside the
-    sandbox. With no operator root set, the answer is a temporary directory —
-    the shell still works, and it works somewhere that holds nothing.
+    sandbox. With no operator root set the answer is None, which means nothing
+    is mounted: the shell still starts, and it starts somewhere that holds
+    nothing of the operator's.
     """
     monkeypatch.delenv("MCP_WORKSPACE_ROOT", raising=False)
 

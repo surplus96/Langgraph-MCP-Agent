@@ -31,7 +31,10 @@ three separate things rather than reinstated with one:
 
    It cannot save a profile that lists a bare interpreter — ``python``,
    ``make``, ``pytest`` all run arbitrary code, so listing one is listing
-   ``sh`` — and the shipped examples name none, enforced by a test. But "do
+   ``sh`` — and the shipped examples name none. The test for that reads the
+   allowlist entries, because the nine-probe test that came first did not:
+   ``python`` could be added to both shipped allowlists and it stayed green,
+   since every probe is refused by the argument denylist regardless. But "do
    not list an interpreter" is not a rule anyone can follow by inspection:
    ``git -c core.pager='sh -c id'``, ``git clone ext::sh`` and
    ``rg --pre /bin/sh`` all run commands, and ``git`` and ``rg`` are the whole
@@ -95,10 +98,14 @@ def resolve_workspace(profile: Profile) -> str | None:
     """Where this profile's commands run, once the operator's limit is applied.
 
     Returns None when the profile asked for nothing, when the operator set no
-    root, or when the profile asked for somewhere outside it. None means
-    `ShellToolMiddleware` uses a temporary directory of its own, which is the
-    safe answer to "I could not honour that": the shell still works, and it
-    works somewhere that holds nothing.
+    root, or when the profile asked for somewhere outside it. None is the safe
+    answer to "I could not honour that", but it is worth knowing what it costs:
+    `ShellToolMiddleware` makes a host temporary directory and
+    `DockerExecutionPolicy` then declines to mount it, because it recognises
+    its own prefix — so the container runs `-w /` on a read-only root and
+    commands can read the image and write nowhere. Under the host policy the
+    temporary directory is the working directory and is writable. Either way
+    the shell still starts, and nothing of the operator's is inside it.
     """
     wanted = profile.shell.workspace_root
     if not wanted:
@@ -108,7 +115,8 @@ def resolve_workspace(profile: Profile) -> str | None:
     if root is None:
         logger.warning(
             "Profile %r asks for workspace %r but MCP_WORKSPACE_ROOT is not set; "
-            "running in a temporary directory instead.",
+            "nothing will be mounted (the docker policy then runs -w / on a "
+            "read-only root, so commands can write nowhere).",
             profile.name,
             wanted,
         )
@@ -126,7 +134,8 @@ def resolve_workspace(profile: Profile) -> str | None:
     if resolved != limit and not resolved.is_relative_to(limit):
         logger.warning(
             "Profile %r asks for workspace %s, which is outside MCP_WORKSPACE_ROOT=%s; "
-            "running in a temporary directory instead.",
+            "nothing will be mounted (the docker policy then runs -w / on a "
+            "read-only root, so commands can write nowhere).",
             profile.name,
             resolved,
             limit,
@@ -345,10 +354,14 @@ def build_shell_middleware(profile: Profile) -> list[Any]:
             "The shell middleware did not take the execution policy it was given; "
             "refusing to run commands under an unknown policy."
         )
-    # Order is behaviour. The allowlist decides whether a command may run at
-    # all, so it comes first and a refusal never reaches a person for approval.
-    # The approval gate then stops what is permitted but consequential, and the
-    # shell that actually runs it is last.
+    # The order below is the order these read in, and it is asserted in
+    # `tests/test_shell.py`. What it is *not* is the thing that keeps a refused
+    # command from stopping a person: `HumanInTheLoopMiddleware` hooks
+    # `after_model` while the guard is a `wrap_tool_call`, so the interrupt
+    # fires first whatever this list says. That is why the approval predicate
+    # in `approvals.py` carries `and is_allowed` — measured, by a test written
+    # to prove the ordering and failing against correct code. Do not delete
+    # that half on the strength of this line.
     from mcp_agent.approvals import build_approval_middleware
 
     return [build_allowlist_guard(profile), *build_approval_middleware(profile), shell]

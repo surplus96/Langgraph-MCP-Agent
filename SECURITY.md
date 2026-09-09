@@ -30,7 +30,7 @@ service.
 |---|---|
 | Arbitrary command execution via a registered MCP server | `MCP_ALLOWED_COMMANDS` allowlist; `MCP_ALLOW_TOOL_EDIT` off by default |
 | Arbitrary command execution via the **shell capability** | Off unless an operator *and* a profile both enable it; sandboxed with no network; per-profile allowlist; human approval for named prefixes. See [docs/PROFILES.md](docs/PROFILES.md) |
-| A handed-over profile escalating privilege | `MCP_ENABLE_SHELL`, `MCP_SHELL_POLICY` and `MCP_WORKSPACE_ROOT` are operator-side; a profile cannot enable a shell, reach the host policy, or choose what is mounted |
+| A handed-over profile escalating privilege | `MCP_ENABLE_SHELL`, `MCP_SHELL_POLICY` and `MCP_WORKSPACE_ROOT` are operator-side; a profile cannot enable a shell, reach the host policy, or mount anything outside the operator's root |
 | Unauthenticated access to the UI | Login gate that fails closed |
 | Credentials committed to the repository | `config.json` and `.env` gitignored; gitleaks in CI and in pre-commit |
 | Known-vulnerable dependencies | `pip-audit` in CI against the locked resolution |

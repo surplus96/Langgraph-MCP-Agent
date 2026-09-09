@@ -278,6 +278,41 @@ def test_ttl_falls_back_on_a_bad_value(monkeypatch):
     assert _prompt_cache_ttl() == "5m"
 
 
+def test_an_empty_ttl_is_the_default_not_a_typo(caplog, monkeypatch):
+    """Compose passes `PROMPT_CACHE_TTL=${PROMPT_CACHE_TTL:-}`.
+
+    That sets the variable to the empty string, so a `.get(name, "1h")`
+    default never fires and the operator gets a warning about a value they
+    never typed, on every agent build. Unset and set-to-empty must land in the
+    same place, and neither may warn.
+    """
+    import logging
+
+    from mcp_agent.agent import _prompt_cache_ttl
+
+    monkeypatch.setenv("PROMPT_CACHE_TTL", "")
+    with caplog.at_level(logging.WARNING, logger="mcp_agent.agent"):
+        assert _prompt_cache_ttl() == "1h"
+    assert caplog.records == []
+
+    monkeypatch.setenv("PROMPT_CACHE_TTL", "  ")
+    with caplog.at_level(logging.WARNING, logger="mcp_agent.agent"):
+        assert _prompt_cache_ttl() == "1h"
+    assert caplog.records == []
+
+
+def test_a_real_typo_still_warns(caplog, monkeypatch):
+    """The fallback above must not swallow the case it was written for."""
+    import logging
+
+    from mcp_agent.agent import _prompt_cache_ttl
+
+    monkeypatch.setenv("PROMPT_CACHE_TTL", "30m")
+    with caplog.at_level(logging.WARNING, logger="mcp_agent.agent"):
+        assert _prompt_cache_ttl() == "1h"
+    assert any("30m" in r.getMessage() for r in caplog.records)
+
+
 def test_summarization_and_caching_are_both_attached(monkeypatch):
     """Adding history summarization must not displace the caching middleware."""
     import asyncio

@@ -21,7 +21,7 @@ uv sync                                   # install, dev deps included
 uv run streamlit run app.py --server.port 8585
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src/mcp_agent app.py
-uv run pytest -q                          # 480 tests, no network, no API key
+uv run pytest -q                          # 486 tests, no network, no API key
 uv run python scripts/check_models.py     # verify the registry against the live API
 ```
 
@@ -39,7 +39,11 @@ operator through `MCP_ENABLE_SHELL`, and a profile through `shell.enabled`.
 Never collapse that into one switch, never let a profile reach
 `HostExecutionPolicy` or choose its own mount, and never add an interpreter
 (`python`, `sh`, `make`, `find`, `pytest`, `xargs`) to a shipped example
-allowlist — listing one is listing `sh`. Tests enforce all of this;
+allowlist — listing one is listing `sh`. Tests enforce all of this; the one
+that reads the allowlist entries is
+`test_no_shipped_allowlist_names_an_interpreter`, and the nine-probe test
+beside it constrains the argument denylist only. Do not merge the two: the
+probe test stays green with `python` in the allowlist.
 [docs/PROFILES.md](docs/PROFILES.md) says why.
 
 **The allowlist is defence in depth, not the boundary.** The boundary is the

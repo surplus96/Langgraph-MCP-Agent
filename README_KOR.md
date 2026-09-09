@@ -81,6 +81,14 @@ docker compose -f docker-compose.yaml -f docker-compose.arm64.yaml up -d
 실행하므로 직접 노출하면 안 됩니다. 반드시 TLS와 인증을 갖춘 리버스 프록시를
 앞에 두십시오.
 
+**셸 기능은 Compose 환경에서 동작하지 않습니다.** `dockers/Dockerfile`이 만드는
+이미지에는 Docker CLI가 없고 compose 파일은 Docker 소켓을 마운트하지 않으므로,
+`shell.enabled`인 프로필은 첫 명령에서 실패합니다. 이는 의도된 선택입니다 — 앱
+컨테이너에 호스트 데몬을 넘기면 샌드박스 탈출이 곧 호스트 장악이 되므로, 샌드박스를
+두는 목적 자체가 무너집니다. 셸이 필요하다면 소스에서 직접 실행하거나, 컨테이너
+샌드박스를 의도적으로 제공한 런타임에서 실행하세요. 그 외 기능 — MCP 서버, 프로필,
+승인, 한도 — 은 Compose에서 모두 동작합니다.
+
 ## 소스코드로 부터 직접 설치
 
 1. 저장소를 클론합니다.
@@ -127,9 +135,10 @@ uv run streamlit run app.py --server.port 8585
 | `MCP_PROFILES_PATH` | 아니오 | `profiles.json` | 프로필을 읽는 경로. 파일이 없으면 프로필은 하나뿐입니다 — 설정된 모든 서버, 셸 없음. |
 | `MCP_ENABLE_SHELL` | 아니오 | `false` | 셸 스위치의 운영자 쪽 절반. 나머지 절반은 프로필이 켜며, **둘 다** 필요합니다. |
 | `MCP_SHELL_POLICY` | 아니오 | 미설정 | `host` 는 요청한 프로필에 한해 호스트 실행 정책을 **허용**할 뿐, 강제하지 않습니다. |
-| `MCP_WORKSPACE_ROOT` | 아니오 | 미설정 | 프로필이 샌드박스에 마운트할 수 있는 유일한 디렉터리. 미설정이면 임시 디렉터리가 쓰입니다. |
+| `MCP_WORKSPACE_ROOT` | 아니오 | 미설정 | 프로필이 샌드박스에 마운트할 수 있는 유일한 디렉터리이며, 프로필의 `workspace_root`는 이 경로 안에 있을 때만 적용됩니다. 미설정이거나 범위를 벗어나면 **아무것도 마운트되지 않습니다** — 기본 정책에서는 컨테이너가 읽기 전용 루트에 `-w /`로 실행되어 명령이 어디에도 쓸 수 없습니다. |
 | `MCP_SANDBOX_IMAGE` | 아니오 | `python:3.12-slim` | 명령이 도는 컨테이너 이미지. 명령이 `/bin/bash` 로 실행되는데 Alpine 에는 없어서 Debian 기반입니다. |
 | `LOG_LEVEL` | 아니오 | `INFO` | 파이썬 로깅 레벨. |
+| `NODE_OPTIONS` | 아니오 | 미설정 | `npx`로 실행되는 MCP 서버에 그대로 전달되며, 이 애플리케이션이 직접 읽지는 않습니다. arm64용 compose 오버레이는 `--max_old_space_size=2048`을 설정합니다 — Apple Silicon에서 `npx` 서버가 가장 먼저 부딪히는 한계가 Node의 기본 힙 크기이기 때문입니다. |
 | `LANGSMITH_*` | 아니오 | 추적 꺼짐 | 이 애플리케이션이 아니라 LangSmith SDK가 읽습니다. 활성화하면 모든 프롬프트·도구 결과·모델 응답이 외부로 전송됩니다. |
 
 `USE_LOGIN=true`이면서 아이디나 비밀번호가 비어 있으면, 앱은 빈 값 제출을
@@ -174,7 +183,7 @@ uv sync              # 개발 의존성 포함 설치
 uv run ruff check .  # 린트
 uv run ruff format . # 포매팅
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 480개 테스트
+uv run pytest -q     # 486개 테스트
 ```
 
 ## 사용법
@@ -209,7 +218,7 @@ uv run pytest -q     # 480개 테스트
 | [CHANGELOG.md](CHANGELOG.md) | 이번 릴리스의 변경 사항. |
 | [CLAUDE.md](CLAUDE.md) | 이 저장소에서 AI 코딩 에이전트가 지켜야 할 작업 규약. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | 이 작업이 따른 현대화 계획과, 의도적으로 미룬 항목. |
-| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | **제안 단계이며 아직 구현되지 않음.** 다음 버전의 오퍼레이션 에이전트 설계와, 승인이 필요한 결정 사항. |
+| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | 0.5.0을 구현할 때 따른 설계 문서. 무엇을 왜 결정했는지에 대한 기록으로 남겨 둡니다. 문서와 코드가 다르면 코드가 맞으며, 차이는 [CHANGELOG.md](CHANGELOG.md)에 정리되어 있습니다. |
 
 ## 라이선스
 
