@@ -621,18 +621,27 @@ if state.pending_approval is not None:
         # leaves the decision on offer, which is right because the graph is
         # still interrupted; and a turn whose next command also needs approval
         # stops again instead of running it.
-        outcome = drive(
-            Turn.resuming(
-                state.agent,
-                chosen,
-                thread_id=state.thread_id,
-                recursion_limit=state.recursion_limit,
-                timeout_seconds=state.timeout_seconds,
-                pending=waiting,
+        try:
+            outcome = drive(
+                Turn.resuming(
+                    state.agent,
+                    chosen,
+                    thread_id=state.thread_id,
+                    recursion_limit=state.recursion_limit,
+                    timeout_seconds=state.timeout_seconds,
+                    pending=waiting,
+                )
             )
-        )
-        state.record(outcome)
-        st.rerun()
+        except Exception as exc:
+            # `Turn` converts what happens *inside* the turn into a reported
+            # error, so reaching here means the wiring around it broke. The
+            # decision stays on offer because the graph is still interrupted,
+            # and a raw traceback on the page would leave no way back to it.
+            logger.exception("Resuming an approved turn failed")
+            st.error(f"Could not resume: {exc}. The command is still waiting.")
+        else:
+            state.record(outcome)
+            st.rerun()
 
 user_query = st.chat_input(
     "💬 Enter your question",
@@ -654,7 +663,8 @@ if user_query:
             )
         )
 
-        if result.error:
-            st.error(result.error)
+        # No `st.error` here: `st.rerun()` on the next line discards the
+        # frame, so it never reached anyone. What the user actually reads is
+        # the transcript, which `record` writes.
         state.record(result, user_query=user_query)
         st.rerun()

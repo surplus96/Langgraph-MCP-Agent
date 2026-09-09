@@ -27,10 +27,18 @@ three separate things rather than reinstated with one:
 3. **The allowlist is defence in depth**, and it is only that. It reads every
    command on the line rather than the first, because the shell tool's own
    description tells the model to chain with ``&&``, and it refuses command
-   substitution outright rather than trying to parse it. It still cannot save
-   a profile that lists an interpreter: ``python``, ``make``, ``find`` and
-   ``pytest`` all run arbitrary code, so listing one is listing ``sh``. The
-   shipped examples name none of them, and a test enforces that.
+   substitution outright rather than trying to parse it.
+
+   It cannot save a profile that lists a bare interpreter — ``python``,
+   ``make``, ``pytest`` all run arbitrary code, so listing one is listing
+   ``sh`` — and the shipped examples name none, enforced by a test. But "do
+   not list an interpreter" is not a rule anyone can follow by inspection:
+   ``git -c core.pager='sh -c id'``, ``git clone ext::sh`` and
+   ``rg --pre /bin/sh`` all run commands, and ``git`` and ``rg`` are the whole
+   point of a repository profile. A review demonstrated all three against this
+   project's own examples, so those argument forms are refused too — as a
+   denylist, which is incomplete by construction and is not what makes any of
+   this safe.
 
 ``HostExecutionPolicy`` runs the model's commands as the Streamlit process. It
 is reachable, because an operator who has read the above may have a reason, and
@@ -318,11 +326,25 @@ def build_shell_middleware(profile: Profile) -> list[Any]:
 
     from langchain.agents.middleware import ShellToolMiddleware
 
+    policy = build_execution_policy(profile)
     shell = ShellToolMiddleware(
         workspace_root=resolve_workspace(profile),
-        execution_policy=build_execution_policy(profile),
+        execution_policy=policy,
         redaction_rules=secret_redactions(),
     )
+
+    # Checked, not assumed. `ShellToolMiddleware`'s own default when it is
+    # handed no policy is `HostExecutionPolicy` — so this one line going
+    # missing does not disable the sandbox, it moves every command onto the
+    # host, which is the failure direction this module exists to prevent. A
+    # mutation pass found the line unconstrained; the test that now covers it
+    # is worth having, and so is refusing to hand back a shell that is not the
+    # one we built.
+    if shell._execution_policy is not policy:  # noqa: SLF001 - fail closed, not tidy
+        raise RuntimeError(
+            "The shell middleware did not take the execution policy it was given; "
+            "refusing to run commands under an unknown policy."
+        )
     # Order is behaviour. The allowlist decides whether a command may run at
     # all, so it comes first and a refusal never reaches a person for approval.
     # The approval gate then stops what is permitted but consequential, and the

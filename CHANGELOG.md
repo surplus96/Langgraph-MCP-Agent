@@ -74,6 +74,24 @@ audited before release. What the audit found, all demonstrated by running it:
   lands in `data/checkpoints.db`, unencrypted, until the conversation is
   deleted.
 
+A second pre-release pass, this time over the tests rather than the code, found
+22 of 47 mutations surviving — every *rule* pinned and almost every line that
+*connects* a rule to the running agent free. Two mattered:
+
+- **`execution_policy=` was unconstrained**, and `ShellToolMiddleware`'s own
+  default when handed no policy is `HostExecutionPolicy`. That line going
+  missing would not have disabled the sandbox; it would have moved every
+  command onto the host. It is now both tested and checked at build time —
+  a shell that did not take the policy it was given is refused rather than
+  returned.
+- **`git` and `rg` are interpreters given the right option**, and both are
+  listed in the shipped examples because they are the point of a repository
+  profile. `git -c core.pager='sh -c id'`, `git clone ext::sh` and
+  `rg --pre /bin/sh` all ran. The docstring claiming the examples "name no
+  interpreter, and a test enforces that" was true of the test and false of the
+  file. Those argument forms are refused now, as an explicitly incomplete
+  denylist, and the claim says what it actually covers.
+
 **Unverified:** no Docker daemon was available while building this, so the
 container isolation flags are set and read but were not observed running.
 Before enabling the shell, run

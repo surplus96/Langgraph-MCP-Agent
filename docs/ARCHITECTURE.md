@@ -428,7 +428,7 @@ pending approval survives a browser reload because it lives in the checkpoint.
 
 ## Testing
 
-443 tests, none of which need a network or an API key. The parts that matter:
+480 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache

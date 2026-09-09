@@ -530,3 +530,42 @@ def test_resuming_continues_the_interrupted_turn_rather_than_starting_one():
     assert ran == ["git push"], "the approved command did not run"
     assert second.result.text == "Done."
     assert events, "the resumed turn drew nothing"
+
+
+def test_resuming_forwards_the_whole_interrupt():
+    """One decision per stopped action, and `Turn` is what carries the count.
+
+    Measured: dropping `pending=` from the forward left the suite green, and
+    any two-action interrupt would then raise on resume.
+    """
+    forwarded: dict = {}
+
+    import mcp_agent.turns as turns_module
+
+    async def spy(agent, decision, renderer, **kwargs):
+        forwarded.update(kwargs)
+        from mcp_agent.agent import QueryResult
+
+        return QueryResult(text="ok")
+
+    original = turns_module.resume_query
+    turns_module.resume_query = spy
+    try:
+        from mcp_agent.approvals import PendingApproval, StoppedAction
+
+        pending = PendingApproval(
+            actions=(StoppedAction("shell", "a"), StoppedAction("shell", "b"))
+        )
+        turn = turns_module.Turn.resuming(
+            object(),
+            {"type": "approve"},
+            thread_id="t",
+            recursion_limit=10,
+            timeout_seconds=5,
+            pending=pending,
+        )
+        list(turn)
+    finally:
+        turns_module.resume_query = original
+
+    assert forwarded.get("pending") is pending

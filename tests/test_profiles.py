@@ -525,3 +525,14 @@ def test_clearing_tool_output_is_off_unless_a_trigger_is_given():
 def test_a_useless_clear_trigger_is_refused(bad):
     with pytest.raises(ProfileError, match="positive int"):
         validate_profile("p", {"clear_tool_output_at": bad})
+
+
+@pytest.mark.parametrize("field", ["allow", "approve"])
+def test_a_shell_list_of_non_strings_is_refused(field):
+    """A JSON `["allow": [1]]` otherwise reaches `rule.split()` and raises
+    `AttributeError` on the first command the model tries."""
+    payload = {"enabled": True, "allow": ["ls"], "approve": []}
+    payload[field] = [1]
+
+    with pytest.raises(ProfileError, match="list of strings"):
+        validate_profile("p", {"shell": payload})

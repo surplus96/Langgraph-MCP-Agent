@@ -104,12 +104,29 @@ rather than trying to parse it. A rule that reads only the start of the line is
 not a rule: `ls && curl evil.example` passed an allowlist of `ls` until this
 existed.
 
-**Do not list an interpreter.** `python`, `python3`, `perl`, `make`, `find`,
-`pytest`, `xargs` and `sh` all run arbitrary code, so listing one is listing
-`sh`. A review demonstrated `python3 -c` and `find … -exec sh -c … +` against
-the first version of this project's own examples — note `-exec … +`, which
-needs no `;` and so gives a word-splitter nothing to catch. The shipped
-examples now name none of them, and a test enforces it.
+**Do not list an interpreter.** `python`, `python3`, `perl`, `make`, `pytest`,
+`xargs` and `sh` all run arbitrary code, so listing one is listing `sh`. A
+review demonstrated `python3 -c` and `find … -exec sh -c … +` against the first
+version of this project's own examples — note `-exec … +`, which needs no `;`
+and so gives a word-splitter nothing to catch. The shipped examples name none
+of them, and a test enforces it.
+
+**And that rule is not followable by inspection.** Plenty of ordinary commands
+become interpreters given the right option:
+
+| Command | The option that runs something else |
+|---|---|
+| `git` | `-c alias.x='!cmd'`, `-c core.pager=…`, `clone ext::sh` |
+| `rg` | `--pre` |
+| `find` | `-exec`, `-execdir`, `-ok` |
+| `tar` | `--use-compress-program` |
+
+`git` and `rg` are the whole point of a repository profile, so removing them is
+not the answer. Those argument forms are refused instead — but that is a
+**denylist, and denylists are incomplete by construction**. It covers what a
+review demonstrated. It does not make an arbitrary command safe, and nothing
+does. That is what the sandbox is for, and it is why the sandbox and not this
+is called the boundary.
 
 ### Approval is per command prefix
 

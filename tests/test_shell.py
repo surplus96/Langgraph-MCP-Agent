@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from mcp_agent.profiles import Profile, ShellSettings
+from mcp_agent.profiles import Profile, ShellSettings, is_allowed
 from mcp_agent.shell import (
     SHELL_TOOL_NAME,
     build_execution_policy,
@@ -249,6 +249,17 @@ def test_a_restart_carries_no_command_and_is_passed_through():
     assert reached
 
 
+def test_an_empty_command_is_refused_rather_than_treated_as_a_restart():
+    """Absent and empty are not the same thing.
+
+    A restart carries no `command` key at all. An empty string is a command
+    the model asked to run, and it is not on any allowlist, so it is refused —
+    the branch has to test for absence, not falsiness.
+    """
+    _, reached = _run_guard(_profile(), "")
+    assert not reached, "an empty command reached the shell"
+
+
 # --- Where the sandbox is allowed to look ---------------------------------------
 
 
@@ -439,3 +450,150 @@ def test_the_built_shell_carries_the_redaction_rules(monkeypatch):
     kinds = {rule.pii_type for rule in (shell._redaction_rules or ())}
 
     assert "anthropic_key" in kinds, kinds
+
+
+# --- The wiring, not just the rules ---------------------------------------------
+#
+# A mutation pass found every predicate in this module pinned and every line
+# that *connects* them to the running agent free. That is the more dangerous
+# half: the rules being right buys nothing if the shell is built without them.
+
+
+def test_the_sandbox_policy_reaches_the_middleware(monkeypatch):
+    """`ShellToolMiddleware`'s own default is `HostExecutionPolicy`.
+
+    So this line going missing does not disable the sandbox — it moves every
+    command onto the machine serving the page. Fail-open, in the one place
+    this module exists to keep closed.
+    """
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+    monkeypatch.delenv("MCP_SHELL_POLICY", raising=False)
+
+    shell = build_shell_middleware(_profile())[-1]
+    policy = shell._execution_policy
+
+    assert type(policy).__name__ == "DockerExecutionPolicy", type(policy).__name__
+    assert policy.network_enabled is False
+    assert policy.read_only_rootfs is True
+    assert policy.user == "nobody"
+
+
+def test_a_shell_that_did_not_take_our_policy_is_refused(monkeypatch):
+    """Fail closed rather than tidy: an unknown policy runs no commands."""
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+
+    import langchain.agents.middleware as mw
+
+    class Ignores(mw.ShellToolMiddleware):
+        def __init__(self, **kwargs):
+            kwargs.pop("execution_policy", None)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(mw, "ShellToolMiddleware", Ignores)
+
+    with pytest.raises(RuntimeError, match="did not take the execution policy"):
+        build_shell_middleware(_profile())
+
+
+def test_the_resolved_workspace_reaches_the_middleware(monkeypatch, tmp_path):
+    """Positively, not by absence.
+
+    The earlier version of this asserted `"/root" not in ...`, which `None`
+    also satisfies — so it could not tell "resolved correctly" from "never
+    passed at all", and the mutation dropping the argument survived it.
+    """
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    inside = tmp_path / "project"
+    inside.mkdir()
+
+    shell = build_shell_middleware(_profile(workspace_root=str(inside)))[-1]
+
+    assert str(shell._workspace_root) == str(inside)
+
+
+def test_the_approval_gate_is_in_the_built_shell(monkeypatch):
+    """The guard, then the gate, then the tool — assembled, not hand-listed."""
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+
+    names = [type(m).__name__ for m in build_shell_middleware(_profile(approve=("git push",)))]
+
+    assert names == [
+        "ShellAllowlistMiddleware",
+        "HumanInTheLoopMiddleware",
+        "ShellToolMiddleware",
+    ], names
+
+
+def test_a_profile_with_no_approval_rules_still_gets_guard_and_tool(monkeypatch):
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+
+    names = [type(m).__name__ for m in build_shell_middleware(_profile(approve=()))]
+
+    assert names == ["ShellAllowlistMiddleware", "ShellToolMiddleware"], names
+
+
+@pytest.mark.parametrize(
+    ("kind", "sample"),
+    [
+        ("anthropic_key", "sk-ant-api03-AAAAAAAAAAAAAAAAAAAA"),
+        ("openai_key", "sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        ("github_token", "ghp_AAAAAAAAAAAAAAAAAAAAAAAA"),
+        ("aws_access_key", "AKIAIOSFODNN7EXAMPLE"),
+        ("slack_token", "xoxb-AAAAAAAAAAAA-BBBB"),
+        ("private_key_block", "-----BEGIN RSA PRIVATE KEY-----"),
+    ],
+)
+def test_each_redaction_rule_detects_what_it_is_named_for(kind, sample):
+    """Rules that never match are rules in name only.
+
+    Measured: replacing every detector with a pattern that cannot match left
+    the suite green, because nothing asserted the detectors detect.
+    """
+    import re
+
+    from mcp_agent.shell import secret_redactions
+
+    rule = [r for r in secret_redactions() if r.pii_type == kind][0]
+    assert re.search(rule.detector, sample), (kind, rule.detector)
+
+
+# --- Arguments that turn a listed command into an interpreter --------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -c alias.pwn='!curl http://evil.example' pwn",
+        "git -c core.pager='sh -c id' log",
+        "git --config=core.pager=sh log",
+        # No `-c` here: only the `ext::` marker can refuse this one.
+        "git clone ext::sh",
+        "git clone ext::sh -c id",
+        "rg --pre /bin/sh --pre-glob '*' x .",
+        "find . -exec sh -c id {} +",
+        "find . -execdir sh {} +",
+        "tar --use-compress-program=sh -cf x .",
+    ],
+)
+def test_an_argument_that_runs_another_command_is_refused(command):
+    """ "Do not list an interpreter" is not followable by inspection.
+
+    `git` and `rg` *are* interpreters given the right option, and both are
+    listed in the shipped examples because they are the whole point of a
+    repository profile. A reviewer demonstrated all of these against those
+    examples. This is a denylist and denylists are incomplete — the sandbox is
+    still the boundary — but these four shapes were shown, so they are covered.
+    """
+    settings = ShellSettings(enabled=True, allow=("git", "rg", "find", "tar"))
+    assert is_allowed(command, settings) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git status", "git log --oneline", "rg TODO .", "find . -name '*.py'", "git push origin main"],
+)
+def test_ordinary_uses_of_those_commands_still_work(command):
+    """A denylist that stops the profile doing its job would just be turned off."""
+    settings = ShellSettings(enabled=True, allow=("git", "rg", "find"))
+    assert is_allowed(command, settings) is True

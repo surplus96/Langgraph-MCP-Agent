@@ -504,3 +504,44 @@ def test_the_whole_chain_in_order():
         "SummarizationMiddleware",
         "AnthropicPromptCachingMiddleware",
     ]
+
+
+def test_the_shell_lands_in_the_chain_where_the_docstring_says(monkeypatch):
+    """The chain-order test above has no shell, so it never covered this.
+
+    Measured: deleting `chain.extend(build_shell_middleware(profile))`, and
+    separately moving it to after prompt caching, both left the suite green —
+    so the comment about capping a runaway before it reaches a command line was
+    a comment and nothing else.
+    """
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+
+    from mcp_agent.profiles import Limits, Profile, ShellSettings
+
+    profile = Profile(
+        name="p",
+        shell=ShellSettings(enabled=True, allow=("git",), approve=("git push",)),
+        limits=Limits(tool_calls_per_run=10, model_calls_per_run=5),
+        clear_tool_output_at=50_000,
+    )
+
+    assert _names(profile) == [
+        "ModelCallLimitMiddleware",
+        "ToolCallLimitMiddleware",
+        "ShellAllowlistMiddleware",
+        "HumanInTheLoopMiddleware",
+        "ShellToolMiddleware",
+        "ContextEditingMiddleware",
+        "SummarizationMiddleware",
+        "AnthropicPromptCachingMiddleware",
+    ]
+
+
+def test_no_shell_reaches_the_chain_when_the_operator_has_not_enabled_one(monkeypatch):
+    monkeypatch.delenv("MCP_ENABLE_SHELL", raising=False)
+
+    from mcp_agent.profiles import Profile, ShellSettings
+
+    profile = Profile(name="p", shell=ShellSettings(enabled=True, allow=("git",)))
+
+    assert not [name for name in _names(profile) if "Shell" in name]

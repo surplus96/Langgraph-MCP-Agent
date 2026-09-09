@@ -545,3 +545,37 @@ def test_an_empty_pending_still_yields_one_decision():
     from mcp_agent.approvals import PendingApproval, decisions_for
 
     assert decisions_for(PendingApproval(), approve()) == [{"type": "approve"}]
+
+
+# --- The restart branch ----------------------------------------------------------
+
+
+def test_a_restart_carries_no_command_and_does_not_stop_for_approval():
+    """`restart: true` runs nothing, so there is nothing to approve.
+
+    Not cosmetic: without the guard the predicate calls `is_allowed(None, …)`
+    and raises inside the middleware, which fails the turn rather than the
+    command.
+    """
+    gate = build_approval_middleware(_profile())[0]
+    when = gate.interrupt_on["shell"]["when"]
+
+    class Restart:
+        tool_call = {"name": "shell", "args": {"restart": True}, "id": "c1"}
+
+    assert when(Restart()) is False
+
+
+def test_the_pending_command_is_only_reported_when_there_is_exactly_one():
+    """Two stopped actions have no single command, and saying otherwise would
+    put one of them on screen as though it were the whole decision."""
+    from mcp_agent.approvals import PendingApproval, StoppedAction
+
+    one = PendingApproval(actions=(StoppedAction("shell", "git push"),))
+    two = PendingApproval(
+        actions=(StoppedAction("shell", "git push"), StoppedAction("shell", "rm -rf x"))
+    )
+
+    assert one.command == "git push"
+    assert two.command == ""
+    assert two.first.command == "git push"

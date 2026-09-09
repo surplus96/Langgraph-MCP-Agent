@@ -287,6 +287,52 @@ _SEPARATORS = re.compile(r"&&|\|\||[;|&\n]")
 _SUBSTITUTION = re.compile(r"\$\(|`|<\(|>\(")
 
 
+#: Argument forms that turn an ordinary command into an interpreter. A review
+#: demonstrated all four shapes below against this project's own examples:
+#: `git -c alias.x='!cmd'`, `git -c core.pager='sh -c id'`, `git clone ext::sh`
+#: and `rg --pre /bin/sh`. So "do not list an interpreter" is not a rule anyone
+#: can follow by inspection — `git` and `rg` *are* interpreters, given the
+#: right option.
+#:
+#: This is a denylist, and denylists are incomplete by construction. It is here
+#: because the four it covers are cheap to cover and were demonstrated, not
+#: because it makes an arbitrary command safe. Nothing makes an arbitrary
+#: command safe; that is what the sandbox is for.
+_ARGUMENT_EXECUTORS = frozenset(
+    {
+        "-c",
+        "--config",
+        "-exec",
+        "-execdir",
+        "-ok",
+        "-okdir",
+        "--pre",
+        "--pager",
+        "--upload-pack",
+        "--receive-pack",
+        "--use-compress-program",
+    }
+)
+
+#: Git's `ext::` transport runs its argument as a command. Matched as a
+#: substring because it appears inside a URL rather than as its own token.
+_EMBEDDED_EXECUTORS = ("ext::",)
+
+
+def _executes_something_else(words: list[str]) -> bool:
+    """Whether an argument turns this command into a way to run another."""
+    for word in words[1:]:
+        if word in _ARGUMENT_EXECUTORS:
+            return True
+        # `--config=x` and `--pre=x` are the same options spelled differently.
+        head = word.split("=", 1)[0]
+        if head in _ARGUMENT_EXECUTORS:
+            return True
+        if any(marker in word for marker in _EMBEDDED_EXECUTORS):
+            return True
+    return False
+
+
 def command_segments(command: str) -> list[str]:
     """Every command in one shell line, split on the operators that join them.
 
@@ -369,7 +415,11 @@ def is_allowed(command: str, settings: ShellSettings) -> bool:
     segments = command_segments(command)
     if not segments:
         return False
-    return all(
-        (words := _significant_words(segment)) and words[0] in settings.allow
-        for segment in segments
-    )
+
+    for segment in segments:
+        words = _significant_words(segment)
+        if not words or words[0] not in settings.allow:
+            return False
+        if _executes_something_else(words):
+            return False
+    return True

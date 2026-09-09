@@ -832,6 +832,7 @@ def test_a_resume_that_fails_leaves_the_decision_on_offer(monkeypatch):
     app = _click(app, "Approve")
 
     assert app.session_state[SESSION_KEY].pending_approval is not None
+    assert not app.exception, [str(e) for e in app.exception]
 
 
 def test_replayed_answers_do_not_fetch_images(monkeypatch):
@@ -854,3 +855,89 @@ def test_replayed_answers_do_not_fetch_images(monkeypatch):
     drawn = " ".join(block.value for block in app.markdown)
     assert "attacker.example" not in drawn, drawn
     assert "Done." in drawn
+
+
+def _stop_for_two(app, first="git push", second="rm -rf build"):
+    from mcp_agent.approvals import PendingApproval, StoppedAction
+
+    app.session_state[SESSION_KEY].pending_approval = PendingApproval(
+        actions=(
+            StoppedAction("shell", first, {"command": first}),
+            StoppedAction("shell", second, {"command": second}),
+        )
+    )
+    return app.run()
+
+
+def test_both_stopped_commands_are_shown(monkeypatch):
+    """A model can call two tools in one message, and one interrupt carries both.
+
+    Showing one and hiding the other asks someone to decide about something
+    they cannot see. Measured: rendering only the first left the suite green.
+    """
+    app = _stop_for_two(run_app(monkeypatch))
+
+    shown = [block.value for block in app.code]
+    assert "git push" in shown and "rm -rf build" in shown, shown
+    assert any("2 commands" in warning.value for warning in app.warning)
+
+
+def test_the_whole_interrupt_is_handed_to_the_resume(monkeypatch):
+    """The middleware counts the decisions it gets back.
+
+    Measured: dropping `pending=` from the call left the suite green, and the
+    resume would raise on any two-action interrupt — wedging the thread while
+    the page cleared the approval over a graph that could not advance.
+    """
+    seen = _spy_resume(monkeypatch)
+    app = _stop_for_two(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert seen.get("pending") is not None, "the resume was given no interrupt to answer"
+    assert len(seen["pending"]) == 2
+
+
+def test_a_resume_that_fails_reports_it_rather_than_crashing(monkeypatch):
+    """The earlier version of this test asserted only that the decision stayed.
+
+    It passed while the page ended in an uncaught traceback — it was the one
+    case in this file that never asserted `not app.exception`, which is how it
+    concealed that the call site had no error handling at all.
+    """
+    _spy_resume(monkeypatch, explode=True)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert not app.exception, [str(e) for e in app.exception]
+    assert app.session_state[SESSION_KEY].pending_approval is not None
+    assert any("still waiting" in error.value for error in app.error), [e.value for e in app.error]
+
+
+def test_the_question_reaches_the_transcript(monkeypatch):
+    """`record` is given the query, so the conversation shows what was asked."""
+    import mcp_agent.turns as turns
+    from mcp_agent.agent import QueryResult
+
+    class SpyTurn(turns.Turn):
+        def __init__(self, agent, query, **kwargs):
+            self._done = QueryResult(text="Half past four.")
+
+        def __iter__(self):
+            return iter(())
+
+        @property
+        def result(self):
+            return self._done
+
+    monkeypatch.setattr("mcp_agent.turns.Turn", SpyTurn)
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].session_initialized = True
+    app.session_state[SESSION_KEY].agent = object()
+    app.run()
+    app = app.chat_input[0].set_value("what time is it").run()
+
+    history = app.session_state[SESSION_KEY].history
+    assert {"role": "user", "content": "what time is it"} in history, history
