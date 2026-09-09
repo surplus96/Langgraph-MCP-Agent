@@ -135,7 +135,16 @@ def test_the_policy_override_is_case_insensitive(monkeypatch):
 
 
 def _run_guard(profile: Profile, command, *, tool_name: str = SHELL_TOOL_NAME):
-    """Put one tool call through the guard, recording whether it reached the tool."""
+    """Put one tool call through the guard, recording whether it reached the tool.
+
+    Through `awrap_tool_call`, which is the hook this application actually
+    reaches: it drives the graph with `astream`. Calling the sync hook here
+    passed for an entire commit while production would have raised
+    NotImplementedError on every shell call, because a sync `wrap_tool_call`
+    defines only the sync half.
+    """
+    import asyncio
+
     from mcp_agent.shell import build_allowlist_guard
 
     guard = build_allowlist_guard(profile)
@@ -144,11 +153,26 @@ def _run_guard(profile: Profile, command, *, tool_name: str = SHELL_TOOL_NAME):
     class Request:
         tool_call = {"name": tool_name, "args": {"command": command}, "id": "call-1"}
 
-    def handler(request):
+    async def handler(request):
         reached.append(request)
         return "the tool ran"
 
-    return guard.wrap_tool_call(Request(), handler), reached
+    return asyncio.run(guard.awrap_tool_call(Request(), handler)), reached
+
+
+def test_the_guard_implements_the_hook_the_app_actually_uses():
+    """`astream` reaches `awrap_tool_call`; a sync-only guard never runs.
+
+    Stated on its own because it is invisible from the sync side: the sync
+    tests below all passed while every real shell call would have failed.
+    """
+    guard = __import__("mcp_agent.shell", fromlist=["build_allowlist_guard"]).build_allowlist_guard(
+        _profile()
+    )
+
+    from langchain.agents.middleware import AgentMiddleware
+
+    assert type(guard).awrap_tool_call is not AgentMiddleware.awrap_tool_call
 
 
 def test_a_listed_command_reaches_the_tool():

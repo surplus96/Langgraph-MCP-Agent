@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from mcp_agent import auth  # noqa: E402
 from mcp_agent.agent import build_agent, discover_tools  # noqa: E402
+from mcp_agent.approvals import approve, reject  # noqa: E402
 from mcp_agent.config import (  # noqa: E402
     ConfigError,
     allowed_commands,
@@ -569,50 +570,76 @@ if not state.session_initialized:
 
 render_history()
 
-user_query = st.chat_input("💬 Enter your question")
+
+def drive(turn: Turn) -> Any:
+    """Draw one turn as it streams, and hand back its outcome.
+
+    Every Streamlit call here happens on the script thread, which is the only
+    thread allowed to make one; the agent runs on the background loop and the
+    events cross as data. `run_query` still owns the deadline, so a turn cut
+    short reports the text and tokens it managed to produce.
+    """
+    with st.chat_message("assistant", avatar="🤖"):
+        tool_placeholder = st.empty()
+        text_placeholder = st.empty()
+        for event in turn:
+            draw(event, text_placeholder, tool_placeholder)
+    return turn.result
+
+
+if state.pending_approval is not None:
+    waiting = state.pending_approval
+    with st.chat_message("assistant", avatar="🤖"):
+        st.warning("⏸️ This command needs your approval before it runs.")
+        st.code(waiting.command or json.dumps(waiting.args, indent=2), language="bash")
+
+        approve_col, reject_col = st.columns(2)
+        chosen = None
+        if approve_col.button("✅ Approve and run", use_container_width=True, type="primary"):
+            chosen = approve()
+        if reject_col.button("🚫 Reject", use_container_width=True):
+            chosen = reject()
+
+    if chosen is not None:
+        # Not cleared here. `record` sets it from the outcome, which is read
+        # back out of the graph, so it clears when the graph really moved on
+        # and stays when it did not. Two things follow: a resume that fails
+        # leaves the decision on offer, which is right because the graph is
+        # still interrupted; and a turn whose next command also needs approval
+        # stops again instead of running it.
+        outcome = drive(
+            Turn.resuming(
+                state.agent,
+                chosen,
+                thread_id=state.thread_id,
+                recursion_limit=state.recursion_limit,
+                timeout_seconds=state.timeout_seconds,
+            )
+        )
+        state.record(outcome)
+        st.rerun()
+
+user_query = st.chat_input(
+    "💬 Enter your question",
+    disabled=state.pending_approval is not None,
+)
 if user_query:
     if not state.session_initialized:
         st.warning("⚠️ Agent is not initialized. Click 'Apply Settings' in the sidebar.")
     else:
         st.chat_message("user", avatar="🧑‍💻").markdown(user_query)
 
-        with st.chat_message("assistant", avatar="🤖"):
-            tool_placeholder = st.empty()
-            text_placeholder = st.empty()
-
-            # The turn runs on the background loop and streams events back
-            # here; every Streamlit call below happens on the script thread,
-            # which is the only thread allowed to make one. run_query still
-            # owns the deadline, so a turn cut short reports the text and
-            # tokens it managed to produce.
-            turn = Turn(
+        result = drive(
+            Turn(
                 state.agent,
                 user_query,
                 thread_id=state.thread_id,
                 recursion_limit=state.recursion_limit,
                 timeout_seconds=state.timeout_seconds,
             )
-            for event in turn:
-                draw(event, text_placeholder, tool_placeholder)
-            result = turn.result
+        )
 
-        state.usage = state.usage + result.usage
-        state.history.append({"role": "user", "content": user_query})
         if result.error:
             st.error(result.error)
-            state.history.append(
-                {
-                    "role": "assistant",
-                    "content": result.text or result.error,
-                    "tool_log": result.tool_log,
-                }
-            )
-        else:
-            state.history.append(
-                {
-                    "role": "assistant",
-                    "content": result.text,
-                    "tool_log": result.tool_log,
-                }
-            )
+        state.record(result, user_query=user_query)
         st.rerun()

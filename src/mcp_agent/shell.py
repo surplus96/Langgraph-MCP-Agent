@@ -138,14 +138,21 @@ def build_allowlist_guard(profile: Profile) -> Any:
     settings = profile.shell
     permitted = ", ".join(sorted(settings.allow)) or "nothing"
 
+    # Async, and that is not a style choice. `wrap_tool_call` on a sync
+    # function defines only the sync hook, and this application drives the
+    # graph with `astream`, so LangGraph raises NotImplementedError on every
+    # shell call — the guard would never run and the turn would fail. Found by
+    # a test that put a command through a real graph; the unit tests called the
+    # sync hook directly and passed, which is testing the method production
+    # never reaches.
     @wrap_tool_call(name="ShellAllowlistMiddleware")
-    def guard(request: Any, handler: Any) -> Any:
+    async def guard(request: Any, handler: Any) -> Any:
         if request.tool_call.get("name") != SHELL_TOOL_NAME:
-            return handler(request)
+            return await handler(request)
 
         command = request.tool_call.get("args", {}).get("command")
         if command is None:  # a restart, which runs nothing
-            return handler(request)
+            return await handler(request)
 
         if not is_allowed(command, settings):
             logger.warning("Refused shell command %r under profile %r", command, profile.name)
@@ -161,7 +168,7 @@ def build_allowlist_guard(profile: Profile) -> Any:
                 status="error",
             )
 
-        return handler(request)
+        return await handler(request)
 
     return guard
 
@@ -188,5 +195,10 @@ def build_shell_middleware(profile: Profile) -> list[Any]:
         workspace_root=profile.shell.workspace_root,
         execution_policy=build_execution_policy(profile),
     )
-    # The guard is listed first so it wraps the tool the middleware registers.
-    return [build_allowlist_guard(profile), shell]
+    # Order is behaviour. The allowlist decides whether a command may run at
+    # all, so it comes first and a refusal never reaches a person for approval.
+    # The approval gate then stops what is permitted but consequential, and the
+    # shell that actually runs it is last.
+    from mcp_agent.approvals import build_approval_middleware
+
+    return [build_allowlist_guard(profile), *build_approval_middleware(profile), shell]

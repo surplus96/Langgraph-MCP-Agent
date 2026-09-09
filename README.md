@@ -162,7 +162,7 @@ uv sync              # install, including dev dependencies
 uv run ruff check .  # lint
 uv run ruff format . # format
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 334 tests
+uv run pytest -q     # 370 tests
 ```
 
 ## Usage

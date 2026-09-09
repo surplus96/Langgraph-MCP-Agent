@@ -685,3 +685,150 @@ def test_a_host_shell_is_an_error_not_a_caption(monkeypatch, tmp_path):
 
     errors = " ".join(error.value for error in app.error)
     assert "on this host" in errors, errors
+
+
+# --- The approval panel ---------------------------------------------------------
+
+
+def _stop_for_approval(app, command: str = "git push origin main"):
+    """Put the session in the state a stopped command leaves behind."""
+    from mcp_agent.approvals import PendingApproval
+
+    app.session_state[SESSION_KEY].pending_approval = PendingApproval(
+        tool_name="shell", command=command, args={"command": command}
+    )
+    return app.run()
+
+
+def test_a_stopped_command_is_shown_verbatim(monkeypatch):
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    assert not app.exception
+    assert any("git push origin main" in block.value for block in app.code), [
+        c.value for c in app.code
+    ]
+    assert any("needs your approval" in warning.value for warning in app.warning)
+
+
+def test_the_command_is_shown_as_code_never_as_markdown(monkeypatch):
+    """It is model output. A literal fence in it must not escape into the page."""
+    app = _stop_for_approval(run_app(monkeypatch), command="git push `id`")
+
+    assert any("git push `id`" in block.value for block in app.code)
+    assert not any("git push `id`" in block.value for block in app.markdown)
+
+
+def test_both_decisions_are_offered(monkeypatch):
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    labels = [button.label for button in app.button]
+    assert any("Approve" in label for label in labels), labels
+    assert any("Reject" in label for label in labels), labels
+
+
+def test_the_chat_input_is_locked_while_a_decision_is_pending(monkeypatch):
+    """The graph is interrupted mid-turn.
+
+    A new message would append to a thread whose last tool call has no result,
+    which is the invalid sequence every other bound in this project exists to
+    avoid.
+    """
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    assert app.chat_input[0].disabled is True
+
+
+def test_the_chat_input_is_open_when_nothing_is_pending(monkeypatch):
+    app = run_app(monkeypatch)
+    assert app.chat_input[0].disabled is False
+
+
+class _FinishedTurn:
+    """A turn that streams nothing and reports `result`."""
+
+    def __init__(self, result):
+        self._result = result
+
+    def __iter__(self):
+        return iter(())
+
+    @property
+    def result(self):
+        return self._result
+
+
+def _spy_resume(monkeypatch, outcome=None, *, explode=False):
+    """Install a Turn whose `resuming` records how it was called."""
+    import mcp_agent.turns as turns
+    from mcp_agent.agent import QueryResult
+
+    seen: dict = {}
+
+    class SpyTurn(turns.Turn):
+        @classmethod
+        def resuming(cls, agent, decision, **kwargs):
+            seen["decision"] = decision
+            seen.update(kwargs)
+            if explode:
+                raise RuntimeError("the loop went away")
+            return _FinishedTurn(outcome if outcome is not None else QueryResult(text="Done."))
+
+    monkeypatch.setattr("mcp_agent.turns.Turn", SpyTurn)
+    return seen
+
+
+def _click(app, label: str):
+    return [button for button in app.button if label in button.label][0].click().run()
+
+
+def test_approving_resumes_the_same_conversation(monkeypatch):
+    """A decision continues the interrupted turn; it is not a new question.
+
+    Measured: replacing `Turn.resuming` with a fresh `Turn` left every other
+    test green, and would have sent the literal decision dict to the model as
+    a user message while the stopped command sat in the checkpoint forever.
+    """
+    seen = _spy_resume(monkeypatch)
+    app = _stop_for_approval(run_app(monkeypatch))
+    thread = app.session_state[SESSION_KEY].thread_id
+
+    app = _click(app, "Approve")
+
+    assert not app.exception
+    assert seen.get("decision") == {"type": "approve"}
+    assert seen.get("thread_id") == thread, "the resume went to a different conversation"
+
+
+def test_rejecting_sends_a_rejection(monkeypatch):
+    seen = _spy_resume(monkeypatch)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Reject")
+
+    assert seen.get("decision", {}).get("type") == "reject"
+    assert seen["decision"]["message"], "a rejection with no reason tells the model nothing"
+
+
+def test_a_finished_resume_clears_the_pending_command(monkeypatch):
+    _spy_resume(monkeypatch)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert app.session_state[SESSION_KEY].pending_approval is None
+    assert app.chat_input[0].disabled is False
+
+
+def test_a_resume_that_fails_leaves_the_decision_on_offer(monkeypatch):
+    """The graph is still interrupted, so the decision is still the right one.
+
+    Clearing on the click instead would strand it: nothing in the page could
+    resume the turn, and the conversation would be stuck with a tool call that
+    has no result.
+    """
+    _spy_resume(monkeypatch, explode=True)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert app.session_state[SESSION_KEY].pending_approval is not None

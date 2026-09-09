@@ -15,6 +15,7 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
+from mcp_agent.approvals import PendingApproval, pending_from_state
 from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, ModelSpec, build_model
 from mcp_agent.profiles import DEFAULT_PROFILE, Profile
 from mcp_agent.shell import build_shell_middleware
@@ -121,6 +122,14 @@ class QueryResult:
     tool_log: str = ""
     error: str | None = None
     usage: TokenUsage = field(default_factory=TokenUsage)
+    #: Set when the turn stopped for a person rather than finishing. The turn
+    #: is neither a success nor a failure in that case — it is unfinished, and
+    #: resumes with `resume_query` once the decision is made.
+    pending_approval: PendingApproval | None = None
+
+    @property
+    def awaiting_approval(self) -> bool:
+        return self.pending_approval is not None
 
 
 @dataclass
@@ -346,6 +355,22 @@ async def build_agent(
     )
 
 
+async def _pending_approval(agent: Any, config: RunnableConfig) -> PendingApproval | None:
+    """Whether the graph stopped in front of a person, and on what.
+
+    An interrupt is not visible in the stream — it ends normally — so the only
+    place to see one is the checkpointed state afterwards. Never allowed to
+    raise: a turn that finished must not be reported as blocked because this
+    lookup failed.
+    """
+    try:
+        snapshot = await agent.aget_state(config)
+    except Exception:
+        logger.exception("Could not read graph state; assuming nothing is awaiting approval")
+        return None
+    return pending_from_state(snapshot)
+
+
 async def run_query(
     agent: Any,
     query: str,
@@ -355,26 +380,75 @@ async def run_query(
     recursion_limit: int,
     timeout_seconds: float | None = None,
 ) -> QueryResult:
-    """Run one turn against ``agent``, streaming into ``renderer``.
+    """Run one turn against ``agent``, streaming into ``renderer``."""
+    return await _drive(
+        agent,
+        {"messages": [HumanMessage(content=query)]},
+        renderer,
+        thread_id=thread_id,
+        recursion_limit=recursion_limit,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def resume_query(
+    agent: Any,
+    decision: dict[str, Any],
+    renderer: ChunkRenderer,
+    *,
+    thread_id: str,
+    recursion_limit: int,
+    timeout_seconds: float | None = None,
+) -> QueryResult:
+    """Continue a turn that stopped for approval, with the decision made.
+
+    Same thread, so the graph picks up from the checkpoint that holds the
+    stopped call. A rejection is not an error: the middleware writes a
+    ToolMessage saying the user declined, the model reads it, and the turn
+    finishes normally.
+    """
+    from langgraph.types import Command
+
+    return await _drive(
+        agent,
+        Command(resume={"decisions": [decision]}),
+        renderer,
+        thread_id=thread_id,
+        recursion_limit=recursion_limit,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def _drive(
+    agent: Any,
+    graph_input: Any,
+    renderer: ChunkRenderer,
+    *,
+    thread_id: str,
+    recursion_limit: int,
+    timeout_seconds: float | None = None,
+) -> QueryResult:
+    """Stream one pass of the graph, whether it is starting or resuming.
 
     The timeout is applied here rather than by the caller, so that a turn cut
     short still reports the text it streamed and the tokens it already spent.
     Cancelling from outside would strand both in this frame.
     """
     accumulator = StreamAccumulator(renderer)
+    config = RunnableConfig(
+        recursion_limit=recursion_limit,
+        # thread_id belongs under `configurable`; passing it at the
+        # top level only worked via an ensure_config fallback.
+        configurable={"thread_id": thread_id},
+    )
 
     try:
         async with asyncio.timeout(timeout_seconds):
             await astream_graph(
                 agent,
-                {"messages": [HumanMessage(content=query)]},
+                graph_input,
                 callback=accumulator,
-                config=RunnableConfig(
-                    recursion_limit=recursion_limit,
-                    # thread_id belongs under `configurable`; passing it at the
-                    # top level only worked via an ensure_config fallback.
-                    configurable={"thread_id": thread_id},
-                ),
+                config=config,
             )
     except TimeoutError:
         logger.warning("Turn exceeded %ss; keeping partial output", timeout_seconds)
@@ -391,6 +465,19 @@ async def run_query(
             tool_log=accumulator.tool_log,
             error=f"Error during query processing: {exc}",
             usage=accumulator.usage,
+        )
+
+    pending = await _pending_approval(agent, config)
+    if pending is not None:
+        # Checked before the empty-output rule below: a turn that stops at its
+        # first tool call has produced nothing yet, and reporting "the agent
+        # produced no output" for a command waiting on a person would be both
+        # wrong and impossible to act on.
+        return QueryResult(
+            text=accumulator.text,
+            tool_log=accumulator.tool_log,
+            usage=accumulator.usage,
+            pending_approval=pending,
         )
 
     if not accumulator.text and not accumulator.tool_log:
