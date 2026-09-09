@@ -1,6 +1,6 @@
 [project]
 name = "langgraph-mcp-agents"
-version = "0.4.1"
+version = "0.5.0"
 description = "LangGraph ReAct agent with MCP tool adapters, served through Streamlit"
 readme = "README.md"
 requires-python = ">=3.12"

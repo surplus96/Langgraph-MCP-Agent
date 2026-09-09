@@ -10,6 +10,89 @@ Nothing yet.
 
 ---
 
+## [0.5.0] — 2026-09-09
+
+The chat window becomes an operation agent: it can run commands, and what it is
+allowed to do is written down as data rather than compiled in. The design and
+the reasoning behind it are in [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md);
+[docs/PROFILES.md](docs/PROFILES.md) is the reference.
+
+### Added
+
+- **Profiles.** A JSON document naming which MCP servers to open, whether a
+  shell exists and under what constraints, which commands stop for a person,
+  and the ceilings on one run. This is what makes the agent usable outside the
+  toolchain it was built against without editing Python: three teams write
+  three profiles and share no code. **With no profiles file nothing changes** —
+  there is exactly one profile, it opens every configured server and has no
+  shell, and the sidebar shows no selector.
+- **A shell capability, off until two people turn it on.** The operator sets
+  `MCP_ENABLE_SHELL=true` and the profile sets `shell.enabled`; either alone
+  builds nothing. Commands run in a container with no network, a read-only root
+  and a non-root user, in a directory bounded by `MCP_WORKSPACE_ROOT`.
+  `HostExecutionPolicy` is reachable and never a default, never inherited, and
+  reported in the sidebar as an error rather than a caption.
+- **Approvals.** A command matching a profile's `approve` prefixes interrupts
+  the graph and waits for a person. The decision resumes the same turn on the
+  same thread — which works only because 0.4.0 made checkpoints durable, so a
+  pending approval survives a browser reload. Rejection reaches the model as a
+  `ToolMessage`, keeping the conversation usable.
+- **Per-run ceilings, todos and context editing**, all driven by the profile
+  and all off unless it asks. `exit_behavior="end"` on the ceilings, so a run
+  that is cut short still closes its tool calls.
+- `docs/PROFILES.md`, and `example_profiles.json` as a starting point.
+
+### Security
+
+0.2.0 removed a shipped shell server because a shell alongside a web-search
+tool is an indirect prompt-injection path to credential exfiltration. Making
+the shell the point does not retire that reasoning, so the capability was
+audited before release. What the audit found, all demonstrated by running it:
+
+- **`>(` was missing from the substitution refusal** while `<(` was there, so
+  an allowlist of nothing but `ls` still permitted `ls > >(sh -c id)` — no
+  chaining operator and no separator, nothing for a word-splitter to see.
+- **An option or a quote could hide a subcommand from an approval rule.**
+  `git -c user.name=x push`, `git -C /tmp push` and `git "push"` all ran a push
+  and all walked past a rule of `git push`. Rules now match in order rather
+  than by adjacency, and over-match rather than under-match.
+- **The first version of `example_profiles.json` was self-defeating**, listing
+  `python`, `make`, `find` and `pytest`. Listing an interpreter is listing
+  `sh`. Two tests now enforce that no shipped example does, and a third catches
+  an approval rule for a command the allowlist refuses — which can never fire.
+- **A profile chose what was bind-mounted into the sandbox.**
+  `workspace_root: "/root"` produced `docker run -v /root:/root`, and
+  `--read-only` does not cover bind mounts.
+- **The sandbox has no network; the browser does.** An image embed in an
+  assistant reply is fetched by the viewer with no click, so the container's
+  missing network does nothing about it. Image embeds are now defused in both
+  the streamed and the replayed path. The docstring that claimed the
+  exfiltration step "has nowhere to go" was the sentence the feature's
+  justification hung on, and it was wrong.
+- Refused command lines are no longer logged verbatim, and shell output is
+  redacted for provider-token shapes before the model sees it — otherwise it
+  lands in `data/checkpoints.db`, unencrypted, until the conversation is
+  deleted.
+
+**Unverified:** no Docker daemon was available while building this, so the
+container isolation flags are set and read but were not observed running.
+Before enabling the shell, run
+`docker run --rm python:3.12-slim /bin/bash -c 'echo ok'` — the default image
+was Alpine until the audit, which ships no `/bin/bash`.
+
+### Fixed
+
+- The allowlist guard was defined as a sync `wrap_tool_call` while the app
+  drives the graph with `astream`, so LangGraph would have raised
+  `NotImplementedError` on every shell call and the guard would never have run.
+  Its tests called the sync hook directly and passed — the method production
+  never reaches. Never released.
+- Two tool calls in one model message raise a single interrupt carrying both,
+  and answering it with one decision raises, wedging the thread. Every stopped
+  action is now shown and answered. Never released.
+
+---
+
 ## [0.4.1] — 2026-09-09
 
 Ten runtime defects, found in three passes: reviewing 0.4.0 against the plan

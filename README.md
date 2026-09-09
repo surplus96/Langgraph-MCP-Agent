@@ -19,6 +19,13 @@
   Either way, applying a change rebuilds the agent without restarting the process
 - **Streaming Responses**: View agent responses and tool calls in real-time
 - **Conversation History**: Track and manage conversations with the agent
+- **Profiles**: What the agent is configured to *be* — which MCP servers to
+  open, whether it may run commands, which commands stop for a person, and the
+  ceilings on one run — written as JSON rather than code, so a team in any
+  industry configures it without editing Python. See [docs/PROFILES.md](docs/PROFILES.md)
+- **Shell commands, off by default**: A profile can give the agent a shell. It
+  takes an operator *and* a profile to enable, runs in a container with no
+  network, and matching commands stop for a human to approve before they run
 
 ## MCP Architecture
 
@@ -117,6 +124,11 @@ uv run streamlit run app.py --server.port 8585
 | `MCP_TOOL_TIMEOUT` | No | `60` | Seconds — not milliseconds — one tool call may run. Must stay below the sidebar's turn limit (60–600s, default 120), or a call still running at the turn deadline leaves the conversation unusable. The app warns when the two conflict. |
 | `CHECKPOINT_DB_PATH` | No | `data/checkpoints.db` | Where conversations are stored so they survive a restart. `:memory:` disables persistence. |
 | `PROMPT_CACHE_TTL` | No | `1h` | Lifetime of the cached prompt prefix, `5m` or `1h`. Any other value warns and falls back to `1h`. |
+| `MCP_PROFILES_PATH` | No | `profiles.json` | Where profiles are read from. With no file there is one profile: every configured server, no shell. |
+| `MCP_ENABLE_SHELL` | No | `false` | The operator's half of the shell switch. The profile sets the other half, and both are required. |
+| `MCP_SHELL_POLICY` | No | unset | `host` *permits* the host execution policy for profiles that ask for it. It does not impose it. |
+| `MCP_WORKSPACE_ROOT` | No | unset | The one directory a profile may mount into the sandbox. Unset means a temporary one. |
+| `MCP_SANDBOX_IMAGE` | No | `python:3.12-slim` | The container commands run in. Debian-based: they run through `/bin/bash`, which Alpine does not ship. |
 | `LOG_LEVEL` | No | `INFO` | Python logging level. |
 | `LANGSMITH_*` | No | tracing off | Read by the LangSmith SDK, not by this application. Enabling tracing sends every prompt, tool result and model response to a third party. |
 
@@ -192,6 +204,7 @@ Settings** again to rebuild the agent.
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit together and why: the event loop, MCP session lifecycle, prompt caching, token accounting. |
 | [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) | The configuration file in full — every field, what is validated, troubleshooting. |
+| [docs/PROFILES.md](docs/PROFILES.md) | Profiles in full: the shell capability, the allowlist, approvals, and what none of them stop. |
 | [SECURITY.md](SECURITY.md) | Threat model, what each control does and does not do, reporting a vulnerability. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, style, and the standard a test has to meet here. |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in this release. |

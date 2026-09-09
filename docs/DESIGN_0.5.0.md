@@ -1,9 +1,19 @@
 # 0.5.0 design — the operation agent
 
-**Status: approved 2026-09-09, being built.** The four open questions at the
-end were decided as proposed; each is now marked **Decided** where it was
-raised. What is built and what is not is tracked in `CHANGELOG.md`, not here —
-this document is the reasoning, and it stops being edited once 0.5.0 ships.
+**Status: shipped in 0.5.0.** The four open questions at the end were decided
+as proposed. This document is kept as the reasoning that produced the release,
+not as a description of it — `CHANGELOG.md` records what shipped and
+[PROFILES.md](PROFILES.md) is the reference.
+
+Two things it got wrong, both found by building them and both worth leaving
+visible rather than editing away:
+
+- It said `Turn` would gain a third streamed event kind for a pending approval.
+  An interrupt does not present that way — the stream ends normally and the
+  interrupt is only visible afterwards in the checkpointed state.
+- It said list order would put the allowlist guard ahead of the approval gate.
+  It cannot: they hook different phases of the graph, so the interrupt fires
+  first whatever the order. The gate's predicate carries the ordering instead.
 
 ## What is being asked for
 
