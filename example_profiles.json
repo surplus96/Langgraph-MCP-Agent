@@ -1,0 +1,39 @@
+{
+  "general": {
+    "description": "Every configured MCP server, no shell. What you get with no profiles file at all.",
+    "mcp_servers": null
+  },
+  "repository": {
+    "description": "Work inside a checked-out project: read it, run its tests, commit.",
+    "system_prompt": "You are working inside a git repository. Read before you write, and run the project's own checks before you claim a change works.",
+    "mcp_servers": ["git", "filesystem"],
+    "shell": {
+      "enabled": true,
+      "policy": "docker",
+      "workspace_root": "/workspace",
+      "allow": ["git", "ls", "cat", "rg", "find", "pytest", "make"],
+      "approve": ["git push", "git reset --hard", "rm"]
+    },
+    "limits": { "tool_calls_per_run": 40, "model_calls_per_run": 25 }
+  },
+  "analysis": {
+    "description": "Read data and compute over it. No network inside the sandbox.",
+    "system_prompt": "You are analysing data. State the shape of what you loaded before drawing conclusions from it, and show the computation rather than only its result.",
+    "mcp_servers": ["filesystem"],
+    "shell": {
+      "enabled": true,
+      "policy": "docker",
+      "workspace_root": "/workspace",
+      "allow": ["python", "python3", "ls", "cat", "head", "wc"],
+      "approve": ["rm"]
+    },
+    "limits": { "tool_calls_per_run": 60, "model_calls_per_run": 30 }
+  },
+  "research": {
+    "description": "Search and read. Deliberately no shell — the pair is the injection path.",
+    "system_prompt": "You are researching. Cite what you read, and say plainly when a source does not answer the question.",
+    "mcp_servers": ["search", "fetch"],
+    "shell": { "enabled": false },
+    "limits": { "tool_calls_per_run": 30, "model_calls_per_run": 20 }
+  }
+}

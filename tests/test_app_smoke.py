@@ -459,3 +459,105 @@ def test_no_warning_when_the_tool_bound_expires_first(monkeypatch):
     app.run()
 
     assert not any("unusable until it is reset" in warning.value for warning in app.warning)
+
+
+# --- Profiles reach the agent --------------------------------------------------
+
+
+def _with_profiles(tmp_path, monkeypatch, payload: dict) -> None:
+    import json
+
+    path = tmp_path / "profiles.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(path))
+
+
+def test_no_profiles_file_shows_no_selector(monkeypatch, tmp_path):
+    """One profile is not a choice, and a menu of one is noise."""
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(tmp_path / "absent.json"))
+
+    app = run_app(monkeypatch)
+
+    assert not app.exception
+    assert not any("Profile" in box.label for box in app.selectbox), [
+        b.label for b in app.selectbox
+    ]
+
+
+def test_profiles_are_offered_and_described(monkeypatch, tmp_path):
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything, no shell."},
+            "research": {"description": "Search and read.", "mcp_servers": []},
+        },
+    )
+
+    app = run_app(monkeypatch)
+
+    assert not app.exception
+    chooser = [box for box in app.selectbox if "Profile" in box.label]
+    assert chooser, [b.label for b in app.selectbox]
+    assert chooser[0].options == ["general", "research"]
+    assert any("Everything, no shell." in caption.value for caption in app.caption)
+
+
+def test_a_broken_profiles_file_is_reported_and_survivable(monkeypatch, tmp_path):
+    """A typo in a hand-written file must not take the page down."""
+    path = tmp_path / "profiles.json"
+    path.write_text('{"general": }', encoding="utf-8")
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(path))
+
+    app = run_app(monkeypatch)
+
+    assert not app.exception
+    assert any("not valid JSON" in error.value for error in app.error), [e.value for e in app.error]
+
+
+def test_a_profile_narrows_which_servers_are_opened(monkeypatch, tmp_path):
+    """The whole point of naming servers, and nothing else observes it.
+
+    Everything else about a profile is visible in the sidebar; this is not.
+    Measured with a mutation: replacing the profile's selection with the whole
+    configuration left every other test in this file green, so a profile could
+    silently open servers it was written to exclude.
+    """
+    import json
+
+    from mcp_agent.state import SESSION_KEY
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "git": {"command": "python", "args": ["-c", ""], "transport": "stdio"},
+                "search": {"command": "python", "args": ["-c", ""], "transport": "stdio"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {"description": "Just git.", "mcp_servers": ["git"]},
+        },
+    )
+
+    opened: list[dict] = []
+
+    async def spy(mcp_config):
+        opened.append(dict(mcp_config))
+        return []
+
+    monkeypatch.setattr("mcp_agent.agent.discover_tools", spy)
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app.run()
+    [button for button in app.button if button.label == "Apply Settings"][0].click().run()
+
+    assert not app.exception
+    assert opened, "Apply Settings never reached tool discovery"
+    assert list(opened[-1]) == ["git"], opened[-1]

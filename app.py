@@ -35,6 +35,13 @@ from mcp_agent.models import (  # noqa: E402
     MODEL_REGISTRY,
     available_models,
 )
+from mcp_agent.profiles import (  # noqa: E402
+    DEFAULT_PROFILE,
+    ProfileError,
+    load_profiles,
+    profiles_path,
+    servers_for,
+)
 from mcp_agent.rendering import draw  # noqa: E402
 from mcp_agent.runtime import run_sync  # noqa: E402
 from mcp_agent.sessions import tool_timeout  # noqa: E402
@@ -279,6 +286,34 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
 with st.sidebar:
     st.subheader("⚙️ System Settings")
 
+    # A profile is what makes this usable outside the toolchain it was built
+    # against: which servers to open, whether a shell exists, what needs a
+    # person to approve it. With no profiles.json there is exactly one, and it
+    # is what every version before 0.5.0 did.
+    try:
+        profiles = load_profiles()
+    except ProfileError as exc:
+        logger.error("Could not load profiles: %s", exc)
+        st.error(f"❌ {exc}")
+        st.info(f"Fix or remove {profiles_path()} and reload.")
+        profiles = {DEFAULT_PROFILE.name: DEFAULT_PROFILE}
+
+    if state.selected_profile not in profiles:
+        state.selected_profile = next(iter(profiles))
+
+    previous_profile = state.selected_profile
+    if len(profiles) > 1:
+        names = list(profiles)
+        state.selected_profile = st.selectbox(
+            "🧭 Profile",
+            options=names,
+            index=names.index(state.selected_profile),
+            help="Which servers to open, whether a shell is available, and what needs approval.",
+        )
+    active_profile = profiles[state.selected_profile]
+    if active_profile.description:
+        st.caption(active_profile.description)
+
     models = available_models()
     if not models:
         st.warning("⚠️ No API key configured. Add ANTHROPIC_API_KEY to your .env file.")
@@ -314,7 +349,9 @@ with st.sidebar:
         st.caption(f"🎚️ Effort is not supported on {state.selected_model}.")
 
     if state.session_initialized and (
-        previous_model != state.selected_model or previous_effort != state.selected_effort
+        previous_model != state.selected_model
+        or previous_effort != state.selected_effort
+        or previous_profile != state.selected_profile
     ):
         st.warning("⚠️ Setting changed. Click 'Apply Settings' to re-initialize.")
 
@@ -453,9 +490,19 @@ with st.sidebar:
             logger.error("Could not apply MCP config: %s", exc)
             st.error(f"❌ {exc}")
         else:
-            if initialize_session(state.pending_mcp_config):
-                st.success("✅ New settings have been applied.")
-                st.rerun()
+            # The profile decides which of the configured servers to open. A
+            # profile naming one that is not there is an error rather than a
+            # silent omission: the user asked for a tool, and the agent
+            # failing to use it later says nothing about why.
+            try:
+                selected = servers_for(active_profile, state.pending_mcp_config)
+            except ProfileError as exc:
+                logger.error("Profile %r cannot be applied: %s", active_profile.name, exc)
+                st.error(f"❌ {exc}")
+            else:
+                if initialize_session(selected):
+                    st.success("✅ New settings have been applied.")
+                    st.rerun()
 
     st.divider()
     st.subheader("🔄 Actions")

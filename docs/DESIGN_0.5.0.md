@@ -1,7 +1,9 @@
 # 0.5.0 design — the operation agent
 
-**Status: proposal. Nothing here is built.** This document exists to be
-approved, rejected or amended before any code is written.
+**Status: approved 2026-09-09, being built.** The four open questions at the
+end were decided as proposed; each is now marked **Decided** where it was
+raised. What is built and what is not is tracked in `CHANGELOG.md`, not here —
+this document is the reasoning, and it stops being edited once 0.5.0 ships.
 
 ## What is being asked for
 
@@ -99,8 +101,9 @@ never would: a finance team, a lab and a game studio write three profiles and
 share zero Python. Ship four (`general`, `repository`, `analysis`, `research`)
 as examples, not as the product.
 
-**Open question for you:** JSON, or YAML with comments? JSON keeps one parser
-and one editor in the sidebar; YAML is friendlier to hand-write. I lean JSON.
+**Decided: JSON.** One parser, one sidebar editor, and the same file kind as
+`config.json` — a second format would mean a second dependency and a second set
+of failure messages for no capability gained.
 
 ### 3. The shell is off until someone turns it on
 
@@ -210,14 +213,17 @@ breaks it. Concretely, before 0.5.0 can be called done:
 Steps 1–3 are independently shippable. Step 4 is where a design review is worth
 most, because getting the interrupt/resume contract wrong is expensive later.
 
-## What needs your decision
+## The decisions, as taken
 
-1. **Docker as the default shell policy.** It means an operator without a
-   Docker socket gets no shell until they choose `host` explicitly. Correct, or
-   too strict?
-2. **Profiles as JSON** (one parser, editable in the sidebar) or YAML.
-3. **Approval granularity** — per command, per command prefix, or per tool.
-   Per-prefix (`git push`) is the most useful and the most fiddly.
-4. **Whether step 4 ships in 0.5.0 at all**, or 0.5.0 is steps 1–3 and
-   approvals are 0.6.0. Shipping a shell without approvals is not an option;
-   shipping profiles without a shell is.
+All four as proposed, on 2026-09-09.
+
+1. **Docker is the default shell policy.** An operator without a Docker socket
+   gets no shell until they choose `host` in so many words. That is the only
+   default consistent with why 0.2.0 removed the shipped shell.
+2. **Profiles are JSON.**
+3. **Approval is per command prefix** — `git push`, not `git` and not the whole
+   `shell` tool. The most useful granularity and the most fiddly to get right,
+   which is why its tests are named in *How this gets verified*.
+4. **Approvals ship in 0.5.0.** Steps 1-3 remain independently shippable, so a
+   problem in step 4 costs the release its approvals, not its profiles — but
+   the shell does not ship without them.

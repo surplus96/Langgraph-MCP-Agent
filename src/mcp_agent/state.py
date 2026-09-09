@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mcp_agent.models import DEFAULT_EFFORT, DEFAULT_MODEL, Effort
+from mcp_agent.profiles import DEFAULT_PROFILE
 from mcp_agent.usage import TokenUsage
 
 SESSION_KEY = "app_state"
@@ -36,6 +37,10 @@ class AppState:
     recursion_limit: int = 25
     selected_model: str = DEFAULT_MODEL
     selected_effort: Effort = DEFAULT_EFFORT
+    #: Which profile the agent was last built from, by name. Held rather than
+    #: re-read so the sidebar can say "changed, re-apply" the way the model
+    #: selector does.
+    selected_profile: str = DEFAULT_PROFILE.name
     thread_id: str = field(default_factory=random_uuid)
     history: list[dict[str, Any]] = field(default_factory=list)
     pending_mcp_config: dict[str, Any] | None = None
