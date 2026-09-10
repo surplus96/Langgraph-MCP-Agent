@@ -6,67 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- **A pending approval did not survive a browser reload**, though the 0.5.0
-  entry below said it did. The interrupt was in the checkpoint the whole time;
-  nothing read it back. `restore_thread` restores the transcript, and
-  `_pending_approval` ran only at the end of a turn — so a reload rebuilt the
-  page with `pending_approval` empty, presented the stopped turn as a finished
-  answer, and left the chat input unlocked over a thread whose last tool call
-  has no result. `pending_for_thread` is now asked as soon as the agent
-  exists. The existing test proved the *checkpoint* survived a reload, which is
-  why this went unseen: nobody had asked whether the page ever fetched it.
-- **`without_images` passed three CommonMark image forms**, having been fixed
-  twice already. A regular expression cannot express a link label — labels
-  admit `\]` and balanced `[ ]` — so `![a\]b](url)`, `![\]](url)` and
-  `![[x]](url)` all rendered an `<img>` the viewer's browser fetched, which is
-  the one exfiltration channel the sandbox cannot close. It now scans instead
-  of matching, and covers the shortcut and collapsed reference forms too. Each
-  earlier fix closed the spelling in front of it and left the neighbours open;
-  that is why this is a scanner and why the shapes are enumerated in a test.
-
-- **`git config` walked past the approval gate.** `git -c alias.x='!cmd'` was
-  refused as an option; `git config alias.x '!cmd'` writes the identical
-  setting into `.git/config` in the mounted workspace, outlives the process,
-  and was permitted. Two commands against the shipped `repository` profile —
-  `git config alias.pwn '!id'` then `git pwn` — reached arbitrary execution
-  with nothing stopping for a person, because an alias reaches every approved
-  subcommand without naming one. Refused now, keyed under `git` rather than
-  added to the option list, so `cat config` and `ls config` still work.
-  `git --exec-path=DIR` and `rg --hostname-bin` went in beside it: both were
-  demonstrated executing `id`, and both sit in binaries whose executors the
-  documentation enumerated. Each enumeration was short by one.
-- **Redaction did not keep secrets out of the checkpoint**, which is the one
-  thing three documents named as its purpose. `ShellToolMiddleware` cleans the
-  tool message's content and then attaches the raw matches to the same
-  message — `artifact["redaction_matches"][…]["value"]` is the cleartext — and
-  that message goes into graph state, which `AsyncSqliteSaver` writes to
-  `data/checkpoints.db` unencrypted. A review read an Anthropic key back off
-  the file while the model and the screen both showed `[REDACTED_…]`. The
-  redaction made the leak quieter, not smaller. `build_artifact_scrubber` now
-  strips the values between the gate and the tool, keeping the match count.
-
-### Changed
-
-- **`docs/PROFILES.md` no longer presents the approval gate as a boundary.**
-  It is an aid to a cooperative model: `git restore` and `git switch` are the
-  modern spellings of `git checkout`, `cherry-pick` and `revert` write history,
-  and none of them stop. Enumerating subcommands cannot close a set that has no
-  boundary, so the doc says that instead of implying otherwise, and the two
-  shipped profile descriptions were rewritten to stop promising more than the
-  code delivers — `analysis` said "Reading only" while `>` redirection is
-  invisible to the matcher.
-- `license = "MIT"` is declared in `pyproject.toml`. The file always shipped,
-  but the built metadata carried no `License-Expression`, so the distribution
-  read "License: UNKNOWN" while `README.md` showed an MIT badge.
-- `docs/PROFILES.md`'s Compose copy step is `cp ../example_profiles.json …`.
-  The README has you `cd dockers` first, where the old path does not exist.
-
-All four were found by a pre-release audit, and every one was reproduced before
-being fixed. Reverting any turns the suite red — 10 tests for the image
-scanner, 2 for the reload, 2 for the subcommand refusal, 2 for the scrubber —
-checked by mutation rather than assumed.
+Nothing yet.
 
 ---
 
@@ -140,7 +80,7 @@ audited before release. What the audit found, all demonstrated by running it:
   redacted for provider-token shapes before the model sees it — otherwise it
   lands in `data/checkpoints.db`, unencrypted, until the conversation is
   deleted. (The redaction did not by itself keep the value off disk; see the
-  scrubber under Unreleased, which is what made this true.)
+  scrubber under Fixed below, which is what made this true.)
 
 A second pre-release pass, this time over the tests rather than the code, found
 22 of 47 mutations surviving — every *rule* pinned and almost every line that
@@ -205,6 +145,65 @@ make a sandbox escape a host compromise, which is the opposite of the point.
   sets it to the empty string. Every agent build under Compose logged a warning
   about a value nobody typed. Read-then-`or`, matching `shell.py` and
   `sessions.py`.
+- **A pending approval did not survive a browser reload**, though the Approvals
+  entry above said it did. The interrupt was in the checkpoint the whole time;
+  nothing read it back. `restore_thread` restores the transcript, and
+  `_pending_approval` ran only at the end of a turn — so a reload rebuilt the
+  page with `pending_approval` empty, presented the stopped turn as a finished
+  answer, and left the chat input unlocked over a thread whose last tool call
+  has no result. `pending_for_thread` is now asked as soon as the agent
+  exists. The existing test proved the *checkpoint* survived a reload, which is
+  why this went unseen: nobody had asked whether the page ever fetched it.
+- **`without_images` passed three CommonMark image forms**, having been fixed
+  twice already. A regular expression cannot express a link label — labels
+  admit `\]` and balanced `[ ]` — so `![a\]b](url)`, `![\]](url)` and
+  `![[x]](url)` all rendered an `<img>` the viewer's browser fetched, which is
+  the one exfiltration channel the sandbox cannot close. It now scans instead
+  of matching, and covers the shortcut and collapsed reference forms too. Each
+  earlier fix closed the spelling in front of it and left the neighbours open;
+  that is why this is a scanner and why the shapes are enumerated in a test.
+
+- **`git config` walked past the approval gate.** `git -c alias.x='!cmd'` was
+  refused as an option; `git config alias.x '!cmd'` writes the identical
+  setting into `.git/config` in the mounted workspace, outlives the process,
+  and was permitted. Two commands against the shipped `repository` profile —
+  `git config alias.pwn '!id'` then `git pwn` — reached arbitrary execution
+  with nothing stopping for a person, because an alias reaches every approved
+  subcommand without naming one. Refused now, keyed under `git` rather than
+  added to the option list, so `cat config` and `ls config` still work.
+  `git --exec-path=DIR` and `rg --hostname-bin` went in beside it: both were
+  demonstrated executing `id`, and both sit in binaries whose executors the
+  documentation enumerated. Each enumeration was short by one.
+- **Redaction did not keep secrets out of the checkpoint**, which is the one
+  thing three documents named as its purpose. `ShellToolMiddleware` cleans the
+  tool message's content and then attaches the raw matches to the same
+  message — `artifact["redaction_matches"][…]["value"]` is the cleartext — and
+  that message goes into graph state, which `AsyncSqliteSaver` writes to
+  `data/checkpoints.db` unencrypted. A review read an Anthropic key back off
+  the file while the model and the screen both showed `[REDACTED_…]`. The
+  redaction made the leak quieter, not smaller. `build_artifact_scrubber` now
+  strips the values between the gate and the tool, keeping the match count.
+
+### Changed
+
+- **`docs/PROFILES.md` no longer presents the approval gate as a boundary.**
+  It is an aid to a cooperative model: `git restore` and `git switch` are the
+  modern spellings of `git checkout`, `cherry-pick` and `revert` write history,
+  and none of them stop. Enumerating subcommands cannot close a set that has no
+  boundary, so the doc says that instead of implying otherwise, and the two
+  shipped profile descriptions were rewritten to stop promising more than the
+  code delivers — `analysis` said "Reading only" while `>` redirection is
+  invisible to the matcher.
+- `license = "MIT"` is declared in `pyproject.toml`. The file always shipped,
+  but the built metadata carried no `License-Expression`, so the distribution
+  read "License: UNKNOWN" while `README.md` showed an MIT badge.
+- `docs/PROFILES.md`'s Compose copy step is `cp ../example_profiles.json …`.
+  The README has you `cd dockers` first, where the old path does not exist.
+
+All four were found by the pre-release audit described above, and every one was
+reproduced before being fixed. Reverting any turns the suite red — 10 tests for
+the image scanner, 2 for the reload, 2 for the subcommand refusal, 2 for the
+scrubber — checked by mutation rather than assumed.
 
 ---
 
