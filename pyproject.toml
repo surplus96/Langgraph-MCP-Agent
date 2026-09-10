@@ -52,3 +52,10 @@ warn_redundant_casts = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# `tests/fakes.py` is imported as `tests.fakes`, and pytest's default prepend
+# import mode puts `tests/` on sys.path, not the root above it — so `tests` is
+# not a package there. `python -m pytest` happened to work anyway, because that
+# form adds the working directory, and running it that way hid a red CI for
+# four pushes while `uv run pytest` (the command CONTRIBUTING.md and CLAUDE.md
+# both give) failed at collection. Run the documented command.
+pythonpath = ["."]
