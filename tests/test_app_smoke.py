@@ -960,8 +960,8 @@ def _seed_an_interrupted_thread(db_path: str, thread_id: str) -> None:
     from langchain_core.messages import AIMessage
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    from mcp_agent.agent import build_middleware, run_query
-    from mcp_agent.models import MODEL_REGISTRY
+    from mcp_agent.agent import run_query
+    from mcp_agent.approvals import build_approval_middleware
     from mcp_agent.profiles import Profile, ShellSettings
     from tests.fakes import ScriptedModel
 
@@ -983,9 +983,17 @@ def _seed_an_interrupted_thread(db_path: str, thread_id: str) -> None:
                 AIMessage(content="Done."),
             ]
         )
-        spec = MODEL_REGISTRY[next(iter(MODEL_REGISTRY))]
+        # The approval gate alone, not the whole chain. `ShellToolMiddleware`
+        # opens its session in `before_agent` — eagerly, before any command is
+        # run — so including it makes seeding an interrupt depend on a Docker
+        # CLI being on PATH. It is on PATH in CI and in the dev container, and
+        # it is not on a plain Windows machine, where `before_agent` raised,
+        # `_drive` caught it, the seed stored no interrupt, and the read-back
+        # correctly found nothing. That is this test failing on its own
+        # dependency, not the reload. The gate is what produces the interrupt;
+        # nothing here needs a shell that can actually run.
         agent = create_agent(
-            model, [], checkpointer=saver, middleware=build_middleware(profile, model, spec)
+            model, [], checkpointer=saver, middleware=build_approval_middleware(profile)
         )
         await run_query(
             agent, "push it", lambda *a, **k: None, thread_id=thread_id, recursion_limit=10

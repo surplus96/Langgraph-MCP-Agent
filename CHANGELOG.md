@@ -19,6 +19,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   file present and all 48 passed without it. CI never saw it, because `.env` is
   gitignored — the first person to hit it was a user following our own
   instructions. `tests/conftest.py` now keeps a real `.env` out of the suite.
+- **A test depended on a Docker CLI being on PATH**, without saying so. The
+  reload test seeded its interrupt through the whole middleware chain, and
+  `ShellToolMiddleware` opens its session in `before_agent` — eagerly, before
+  any command runs. With no `docker` on PATH that raises, `_drive` catches it,
+  the seed stores no interrupt, and the read-back correctly finds nothing. So
+  the test failed on its own dependency while reporting that the reload was
+  broken. It now seeds through the approval gate alone, which is what produces
+  the interrupt; nothing there needs a shell that can run. Reproduced by
+  hiding `docker` from `shutil.which`: red before, green after, and the whole
+  suite passes with and without the CLI present.
 - **Two tests assumed the developer's platform.** One read `.env.example`
   without an encoding, so a Windows machine with a non-UTF-8 locale hit
   `UnicodeDecodeError` on an em dash. The other asserted a path as a string,
