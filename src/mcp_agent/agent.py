@@ -405,6 +405,24 @@ async def _pending_approval(agent: Any, config: RunnableConfig) -> PendingApprov
     return pending_from_state(snapshot)
 
 
+async def pending_for_thread(agent: Any, thread_id: str) -> PendingApproval | None:
+    """What ``thread_id`` is stopped on, read back from the checkpoint.
+
+    The lookup above runs only at the end of a turn, which is enough for as
+    long as the page lives. A reload does not qualify: it starts a fresh
+    Streamlit session, so `pending_approval` — session state — is gone, while
+    the checkpoint still holds the interrupt. Without this the page rebuilds
+    the transcript, presents the stopped turn as a finished answer, and
+    unlocks the input over a thread whose last tool call has no result.
+
+    `tests/test_approvals.py` already proved the *checkpoint* survives a
+    reload. Nothing had asked whether anything ever read it back, which is the
+    same shape of gap as the two dropped hops 0.5.0's second step had to add
+    tests for: the data was right and no one fetched it.
+    """
+    return await _pending_approval(agent, RunnableConfig(configurable={"thread_id": thread_id}))
+
+
 async def run_query(
     agent: Any,
     query: str,

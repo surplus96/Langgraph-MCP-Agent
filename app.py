@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from mcp_agent import auth  # noqa: E402
-from mcp_agent.agent import build_agent, discover_tools  # noqa: E402
+from mcp_agent.agent import build_agent, discover_tools, pending_for_thread  # noqa: E402
 from mcp_agent.approvals import approve, reject  # noqa: E402
 from mcp_agent.config import (  # noqa: E402
     ConfigError,
@@ -284,6 +284,23 @@ def initialize_session(mcp_config: dict[str, Any], profile: Profile = DEFAULT_PR
     state.tool_count = bundle.tool_count
     state.prefix_tokens = bundle.estimated_prefix_tokens
     state.session_initialized = True
+
+    # A reload arrives here with `pending_approval` empty — it is session state
+    # and the session is new — over a checkpoint that may still hold an
+    # interrupt. Asking the graph is what makes "a pending approval survives a
+    # reload" true of the page rather than only of the database. This is the
+    # first moment it can be asked: the agent has to exist to be asked.
+    #
+    # Never fatal. An agent that built and a page that cannot tell whether it
+    # is blocked is worse than the same page with no agent at all, but only
+    # slightly; failing initialization over this would be worse than both.
+    try:
+        state.pending_approval = run_sync(
+            pending_for_thread(bundle.agent, state.thread_id), timeout=30
+        )
+    except Exception:
+        logger.exception("Could not check whether thread %s is awaiting approval", state.thread_id)
+
     return True
 
 

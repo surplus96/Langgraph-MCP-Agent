@@ -57,10 +57,18 @@ service.
   click. The sandbox's missing network does nothing about that, because the
   request leaves the browser rather than the container.
   `mcp_agent.rendering.without_images` defuses image syntax in both the
-  streamed and the replayed path, which closes the automatic case. Links are
-  left intact — they need a click, and stripping them would cost the model its
-  ability to cite anything — so a user who clicks a link the model wrote is
-  still outside what this stops.
+  streamed and the replayed path, which closes the automatic case. It scans
+  rather than pattern-matches, and covers all four CommonMark spellings —
+  inline, full reference, collapsed reference and shortcut — including labels
+  carrying backslash escapes or nested brackets. That precision is not
+  decorative: two earlier versions used a regular expression, and each one
+  closed the spelling in front of it while leaving the neighbours open. Raw
+  HTML is not a route, because nothing in this project passes
+  `unsafe_allow_html`, so Streamlit escapes it.
+
+  Links are left intact — they need a click, and stripping them would cost the
+  model its ability to cite anything — so a user who clicks a link the model
+  wrote is still outside what this stops.
 - **Multi-tenancy.** There is one credential pair for the whole deployment.
   Everyone who logs in shares the same MCP configuration and the same
   subprocess privileges.

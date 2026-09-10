@@ -941,3 +941,105 @@ def test_the_question_reaches_the_transcript(monkeypatch):
 
     history = app.session_state[SESSION_KEY].history
     assert {"role": "user", "content": "what time is it"} in history, history
+
+
+# --- A stopped command has to still be there after a reload ----------------------
+
+
+def _seed_an_interrupted_thread(db_path: str, thread_id: str) -> None:
+    """Stop a real graph in front of a person and leave it in the checkpoint.
+
+    Built separately from the agent the app will build, on purpose: a reload is
+    a different process, and the question is whether the interrupt survives the
+    crossing rather than whether one object can read its own memory.
+    """
+    import asyncio
+
+    import aiosqlite
+    from langchain.agents import create_agent
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from mcp_agent.agent import build_middleware, run_query
+    from mcp_agent.models import MODEL_REGISTRY
+    from mcp_agent.profiles import Profile, ShellSettings
+    from tests.fakes import ScriptedModel
+
+    profile = Profile(
+        name="approving",
+        shell=ShellSettings(enabled=True, allow=("git",), approve=("git push",)),
+    )
+
+    async def seed() -> None:
+        connection = await aiosqlite.connect(db_path)
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        model = ScriptedModel(
+            replies=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "shell", "args": {"command": "git push"}, "id": "c1"}],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        spec = MODEL_REGISTRY[next(iter(MODEL_REGISTRY))]
+        agent = create_agent(
+            model, [], checkpointer=saver, middleware=build_middleware(profile, model, spec)
+        )
+        await run_query(
+            agent, "push it", lambda *a, **k: None, thread_id=thread_id, recursion_limit=10
+        )
+        await connection.close()
+
+    asyncio.run(seed())
+
+
+def test_a_stopped_command_is_still_on_offer_after_a_reload(monkeypatch, tmp_path):
+    """The approval feature's whole point, across the one event that erases it.
+
+    `pending_approval` is Streamlit session state and a reload starts a new
+    session, so the page came back showing the interrupted turn as a finished
+    answer with the chat input unlocked — over a thread whose last tool call
+    has no result. The checkpoint held the interrupt the entire time and
+    nothing asked it. `tests/test_approvals.py` proved the *data* survived,
+    which is why this went unnoticed: the missing piece was the page reading
+    it back, and only driving the real script can see that.
+    """
+    import json
+
+    from mcp_agent.state import SESSION_KEY
+
+    db = tmp_path / "reload.db"
+    monkeypatch.setenv("CHECKPOINT_DB_PATH", str(db))
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+
+    profiles = tmp_path / "profiles.json"
+    profiles.write_text(
+        json.dumps(
+            {
+                "approving": {
+                    "description": "Stops for a person.",
+                    "shell": {"enabled": True, "allow": ["git"], "approve": ["git push"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(profiles))
+
+    _seed_an_interrupted_thread(str(db), "stopped-thread")
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.query_params["thread"] = "stopped-thread"
+    app.run()
+    assert not app.exception
+
+    app = _apply_settings(app)
+    assert not app.exception
+
+    pending = app.session_state[SESSION_KEY].pending_approval
+    assert pending is not None, "the reloaded page does not know a command is waiting"
+    assert pending.command == "git push"
+    assert app.chat_input[0].disabled, "the input is open over a thread that cannot advance"
+    assert any("git push" in block.value for block in app.code), "the command is not on screen"

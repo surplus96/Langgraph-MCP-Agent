@@ -261,6 +261,81 @@ def test_a_pending_approval_outlives_the_page(tmp_path):
     )
 
 
+def test_pending_for_thread_reads_the_stopped_command_back(tmp_path):
+    """The lookup the page uses on a reload, against a real checkpoint.
+
+    The test above proves the *checkpoint* survives. This proves something is
+    willing to go and get it: `pending_from_state` needs a snapshot, and only
+    an agent plus a thread id can produce one. That gap — data preserved,
+    nobody fetching it — is exactly what shipped.
+    """
+    import aiosqlite
+    from langchain.agents import create_agent
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from mcp_agent.agent import pending_for_thread
+
+    path = str(tmp_path / "checkpoints.db")
+
+    def build(saver):
+        model = ScriptedModel(
+            replies=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "shell", "args": {"command": "git push"}, "id": "call-1"}],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        return create_agent(
+            model, [shell], checkpointer=saver, middleware=build_approval_middleware(_profile())
+        )
+
+    async def stop_it() -> None:
+        connection = await aiosqlite.connect(path)
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        await run_query(build(saver), "push it", Silent(), thread_id="reloaded", recursion_limit=10)
+        await connection.close()
+
+    async def ask_on_reload():
+        connection = await aiosqlite.connect(path)
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        found = await pending_for_thread(build(saver), "reloaded")
+        await connection.close()
+        return found
+
+    asyncio.run(stop_it())
+    assert asyncio.run(ask_on_reload()) == PendingApproval(
+        actions=(
+            StoppedAction(tool_name="shell", command="git push", args={"command": "git push"}),
+        )
+    )
+
+
+def test_pending_for_thread_reports_nothing_for_an_untouched_thread(tmp_path):
+    """The ordinary case. A thread with no interrupt must not look blocked."""
+    import aiosqlite
+    from langchain.agents import create_agent
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from mcp_agent.agent import pending_for_thread
+
+    async def ask():
+        connection = await aiosqlite.connect(str(tmp_path / "checkpoints.db"))
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        agent = create_agent(
+            ScriptedModel(replies=[AIMessage(content="Done.")]), [shell], checkpointer=saver
+        )
+        found = await pending_for_thread(agent, "never-used")
+        await connection.close()
+        return found
+
+    assert asyncio.run(ask()) is None
+
+
 # --- Reading the interrupt ------------------------------------------------------
 
 
