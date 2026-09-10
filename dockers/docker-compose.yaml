@@ -4,7 +4,7 @@ services:
       # Build context is the repository root so the Dockerfile can copy src/.
       context: ..
       dockerfile: dockers/Dockerfile
-    image: langgraph-mcp-agent:0.4.1
+    image: langgraph-mcp-agent:0.5.0
     ports:
       # Bound to loopback. This app launches MCP servers as subprocesses, so it
       # must not be exposed directly; put a reverse proxy with TLS and real
@@ -25,6 +25,24 @@ services:
       - MCP_ALLOWED_COMMANDS=${MCP_ALLOWED_COMMANDS:-}
       # Conversations persist to the ./data volume, alongside config.json.
       - CHECKPOINT_DB_PATH=${CHECKPOINT_DB_PATH:-/app/data/checkpoints.db}
+      # Profiles live on the volume too. The image sets this; passing it here
+      # as well means an operator can move the file without rebuilding, and
+      # the default is not the read-only /app layer, where nothing can write.
+      - MCP_PROFILES_PATH=${MCP_PROFILES_PATH:-/app/data/profiles.json}
+      # --- Shell capability -------------------------------------------------
+      # Off. Turning it on lets the agent run commands; read docs/PROFILES.md
+      # before you do, and note that the container below has no Docker socket,
+      # so the sandbox this app wants is not reachable from inside it.
+      - MCP_ENABLE_SHELL=${MCP_ENABLE_SHELL:-false}
+      # Only `host` is meaningful here, and only alongside the warning above:
+      # it runs the model's commands as this container's own process.
+      - MCP_SHELL_POLICY=${MCP_SHELL_POLICY:-}
+      # The one directory a profile may mount. Unset means a profile gets a
+      # temporary directory no matter what it asks for.
+      - MCP_WORKSPACE_ROOT=${MCP_WORKSPACE_ROOT:-}
+      - MCP_SANDBOX_IMAGE=${MCP_SANDBOX_IMAGE:-}
+      - PROMPT_CACHE_TTL=${PROMPT_CACHE_TTL:-}
+      - MCP_TOOL_TIMEOUT=${MCP_TOOL_TIMEOUT:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - NODE_OPTIONS=${NODE_OPTIONS:-}
     env_file:

@@ -1,7 +1,22 @@
 # 0.5.0 design — the operation agent
 
-**Status: proposal. Nothing here is built.** This document exists to be
-approved, rejected or amended before any code is written.
+**Status: shipped in 0.5.0.** The four open questions at the end were decided
+as proposed. This document is kept as the reasoning that produced the release,
+not as a description of it — `CHANGELOG.md` records what shipped and
+[PROFILES.md](PROFILES.md) is the reference.
+
+Two things it got wrong, both found by building them and both worth leaving
+visible rather than editing away:
+
+- It said `Turn` would gain a third streamed event kind for a pending approval.
+  An interrupt does not present that way — the stream ends normally and the
+  interrupt is only visible afterwards in the checkpointed state.
+- Its middleware order (§6) has no allowlist guard in it at all. The guard was
+  added while building, once it was clear the sandbox alone let a profile's
+  `allow` list mean nothing, and the natural assumption that listing it before
+  the approval gate would make it run first turned out to be wrong: they hook
+  different phases of the graph, so the interrupt fires first whatever the
+  order. The gate's predicate re-checks the allowlist instead.
 
 ## What is being asked for
 
@@ -86,21 +101,28 @@ loadable from the same volume:
   "shell": {
     "enabled": true,
     "policy": "docker",
-    "workspace_root": "/workspace",
-    "allow": ["git", "ls", "cat", "rg", "pytest"],
-    "approve": ["git push", "rm"]
+    "workspace_root": "/srv/workspaces/project",
+    "allow": ["git", "ls", "cat", "rg"],
+    "approve": ["git push", "git reset"]
   },
   "limits": { "tool_calls_per_run": 40, "model_calls_per_run": 25 }
 }
 ```
+
+(As drafted this snippet listed `pytest` in `allow` and `rm` in `approve`.
+Neither survived the build: `pytest` runs arbitrary Python, so listing it is
+listing `sh`, and an approval rule for a command the allowlist refuses can
+never fire. Both are now caught by tests. Corrected here because this snippet
+is the thing people copy.)
 
 This is what makes the thing industry-agnostic in a way a longer default prompt
 never would: a finance team, a lab and a game studio write three profiles and
 share zero Python. Ship four (`general`, `repository`, `analysis`, `research`)
 as examples, not as the product.
 
-**Open question for you:** JSON, or YAML with comments? JSON keeps one parser
-and one editor in the sidebar; YAML is friendlier to hand-write. I lean JSON.
+**Decided: JSON.** One parser, one sidebar editor, and the same file kind as
+`config.json` — a second format would mean a second dependency and a second set
+of failure messages for no capability gained.
 
 ### 3. The shell is off until someone turns it on
 
@@ -159,6 +181,9 @@ ten servers on it.
 2. `ModelCallLimitMiddleware`, `ToolCallLimitMiddleware` — the runaway stops.
 3. `HumanInTheLoopMiddleware` — approval before execution.
 4. `ShellToolMiddleware` — the capability itself.
+
+   *(As built there is a third piece here, the allowlist guard, ahead of both —
+   see the note at the top of this document.)*
 5. `SummarizationMiddleware` — existing, late trigger.
 6. `AnthropicPromptCachingMiddleware` — existing, last so it sees the final shape.
 
@@ -210,14 +235,17 @@ breaks it. Concretely, before 0.5.0 can be called done:
 Steps 1–3 are independently shippable. Step 4 is where a design review is worth
 most, because getting the interrupt/resume contract wrong is expensive later.
 
-## What needs your decision
+## The decisions, as taken
 
-1. **Docker as the default shell policy.** It means an operator without a
-   Docker socket gets no shell until they choose `host` explicitly. Correct, or
-   too strict?
-2. **Profiles as JSON** (one parser, editable in the sidebar) or YAML.
-3. **Approval granularity** — per command, per command prefix, or per tool.
-   Per-prefix (`git push`) is the most useful and the most fiddly.
-4. **Whether step 4 ships in 0.5.0 at all**, or 0.5.0 is steps 1–3 and
-   approvals are 0.6.0. Shipping a shell without approvals is not an option;
-   shipping profiles without a shell is.
+All four as proposed, on 2026-09-09.
+
+1. **Docker is the default shell policy.** An operator without a Docker socket
+   gets no shell until they choose `host` in so many words. That is the only
+   default consistent with why 0.2.0 removed the shipped shell.
+2. **Profiles are JSON.**
+3. **Approval is per command prefix** — `git push`, not `git` and not the whole
+   `shell` tool. The most useful granularity and the most fiddly to get right,
+   which is why its tests are named in *How this gets verified*.
+4. **Approvals ship in 0.5.0.** Steps 1-3 remain independently shippable, so a
+   problem in step 4 costs the release its approvals, not its profiles — but
+   the shell does not ship without them.

@@ -6,7 +6,205 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A pending approval did not survive a browser reload**, though the 0.5.0
+  entry below said it did. The interrupt was in the checkpoint the whole time;
+  nothing read it back. `restore_thread` restores the transcript, and
+  `_pending_approval` ran only at the end of a turn — so a reload rebuilt the
+  page with `pending_approval` empty, presented the stopped turn as a finished
+  answer, and left the chat input unlocked over a thread whose last tool call
+  has no result. `pending_for_thread` is now asked as soon as the agent
+  exists. The existing test proved the *checkpoint* survived a reload, which is
+  why this went unseen: nobody had asked whether the page ever fetched it.
+- **`without_images` passed three CommonMark image forms**, having been fixed
+  twice already. A regular expression cannot express a link label — labels
+  admit `\]` and balanced `[ ]` — so `![a\]b](url)`, `![\]](url)` and
+  `![[x]](url)` all rendered an `<img>` the viewer's browser fetched, which is
+  the one exfiltration channel the sandbox cannot close. It now scans instead
+  of matching, and covers the shortcut and collapsed reference forms too. Each
+  earlier fix closed the spelling in front of it and left the neighbours open;
+  that is why this is a scanner and why the shapes are enumerated in a test.
+
+- **`git config` walked past the approval gate.** `git -c alias.x='!cmd'` was
+  refused as an option; `git config alias.x '!cmd'` writes the identical
+  setting into `.git/config` in the mounted workspace, outlives the process,
+  and was permitted. Two commands against the shipped `repository` profile —
+  `git config alias.pwn '!id'` then `git pwn` — reached arbitrary execution
+  with nothing stopping for a person, because an alias reaches every approved
+  subcommand without naming one. Refused now, keyed under `git` rather than
+  added to the option list, so `cat config` and `ls config` still work.
+  `git --exec-path=DIR` and `rg --hostname-bin` went in beside it: both were
+  demonstrated executing `id`, and both sit in binaries whose executors the
+  documentation enumerated. Each enumeration was short by one.
+- **Redaction did not keep secrets out of the checkpoint**, which is the one
+  thing three documents named as its purpose. `ShellToolMiddleware` cleans the
+  tool message's content and then attaches the raw matches to the same
+  message — `artifact["redaction_matches"][…]["value"]` is the cleartext — and
+  that message goes into graph state, which `AsyncSqliteSaver` writes to
+  `data/checkpoints.db` unencrypted. A review read an Anthropic key back off
+  the file while the model and the screen both showed `[REDACTED_…]`. The
+  redaction made the leak quieter, not smaller. `build_artifact_scrubber` now
+  strips the values between the gate and the tool, keeping the match count.
+
+### Changed
+
+- **`docs/PROFILES.md` no longer presents the approval gate as a boundary.**
+  It is an aid to a cooperative model: `git restore` and `git switch` are the
+  modern spellings of `git checkout`, `cherry-pick` and `revert` write history,
+  and none of them stop. Enumerating subcommands cannot close a set that has no
+  boundary, so the doc says that instead of implying otherwise, and the two
+  shipped profile descriptions were rewritten to stop promising more than the
+  code delivers — `analysis` said "Reading only" while `>` redirection is
+  invisible to the matcher.
+- `license = "MIT"` is declared in `pyproject.toml`. The file always shipped,
+  but the built metadata carried no `License-Expression`, so the distribution
+  read "License: UNKNOWN" while `README.md` showed an MIT badge.
+- `docs/PROFILES.md`'s Compose copy step is `cp ../example_profiles.json …`.
+  The README has you `cd dockers` first, where the old path does not exist.
+
+All four were found by a pre-release audit, and every one was reproduced before
+being fixed. Reverting any turns the suite red — 10 tests for the image
+scanner, 2 for the reload, 2 for the subcommand refusal, 2 for the scrubber —
+checked by mutation rather than assumed.
+
+---
+
+## [0.5.0] — 2026-09-10
+
+The chat window becomes an operation agent: it can run commands, and what it is
+allowed to do is written down as data rather than compiled in. The design and
+the reasoning behind it are in [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md);
+[docs/PROFILES.md](docs/PROFILES.md) is the reference.
+
+### Added
+
+- **Profiles.** A JSON document naming which MCP servers to open, whether a
+  shell exists and under what constraints, which commands stop for a person,
+  and the ceilings on one run. This is what makes the agent usable outside the
+  toolchain it was built against without editing Python: three teams write
+  three profiles and share no code. **With no profiles file nothing changes** —
+  there is exactly one profile, it opens every configured server and has no
+  shell, and the sidebar shows no selector.
+- **A shell capability, off until two separate switches say yes.** One is
+  operator-side and one is in the profile; the same person may hold both, but
+  neither file can turn it on alone. The operator sets
+  `MCP_ENABLE_SHELL=true` and the profile sets `shell.enabled`; either alone
+  builds nothing. Commands run in a container with no network, a read-only root
+  and a non-root user, in a directory bounded by `MCP_WORKSPACE_ROOT`.
+  `HostExecutionPolicy` is reachable and never a default, never inherited, and
+  reported in the sidebar as an error rather than a caption.
+- **Approvals.** A command matching a profile's `approve` prefixes interrupts
+  the graph and waits for a person. The decision resumes the same turn on the
+  same thread — which works only because 0.4.0 made checkpoints durable, so a
+  pending approval survives a browser reload. Rejection reaches the model as a
+  `ToolMessage`, keeping the conversation usable.
+- **Per-run ceilings, todos and context editing**, all driven by the profile
+  and all off unless it asks. `exit_behavior="end"` on the ceilings, so a run
+  that is cut short still closes its tool calls.
+- `docs/PROFILES.md`, and `example_profiles.json` as a starting point.
+
+### Security
+
+0.2.0 removed a shipped shell server because a shell alongside a web-search
+tool is an indirect prompt-injection path to credential exfiltration. Making
+the shell the point does not retire that reasoning, so the capability was
+audited before release. What the audit found, all demonstrated by running it:
+
+- **`>(` was missing from the substitution refusal** while `<(` was there, so
+  an allowlist of nothing but `ls` still permitted `ls > >(sh -c id)` — no
+  chaining operator and no separator, nothing for a word-splitter to see.
+- **An option or a quote could hide a subcommand from an approval rule.**
+  `git -c user.name=x push`, `git -C /tmp push` and `git "push"` all ran a push
+  and all walked past a rule of `git push`. Rules now match in order rather
+  than by adjacency, and over-match rather than under-match.
+- **The first version of `example_profiles.json` was self-defeating**, listing
+  `python`, `make`, `find` and `pytest`. Listing an interpreter is listing
+  `sh`. A test now reads the allowlist entries of every shipped profile and
+  refuses an interpreter among them, a second constrains the argument denylist
+  (`-c`, `-exec`, `--pre`, `ext::`) against nine spawning commands, and a third
+  catches an approval rule for a command the allowlist refuses — which can
+  never fire. The first two were one test until a documentation review measured
+  it: the probes are refused by the denylist whatever the allowlist says, so it
+  never constrained the allowlist it was written to guard.
+- **A profile chose what was bind-mounted into the sandbox.**
+  `workspace_root: "/root"` produced `docker run -v /root:/root`, and
+  `--read-only` does not cover bind mounts.
+- **The sandbox has no network; the browser does.** An image embed in an
+  assistant reply is fetched by the viewer with no click, so the container's
+  missing network does nothing about it. Image embeds are now defused in both
+  the streamed and the replayed path. The docstring that claimed the
+  exfiltration step "has nowhere to go" was the sentence the feature's
+  justification hung on, and it was wrong.
+- Refused command lines are no longer logged verbatim, and shell output is
+  redacted for provider-token shapes before the model sees it — otherwise it
+  lands in `data/checkpoints.db`, unencrypted, until the conversation is
+  deleted. (The redaction did not by itself keep the value off disk; see the
+  scrubber under Unreleased, which is what made this true.)
+
+A second pre-release pass, this time over the tests rather than the code, found
+22 of 47 mutations surviving — every *rule* pinned and almost every line that
+*connects* a rule to the running agent free. Two mattered:
+
+- **`execution_policy=` was unconstrained**, and `ShellToolMiddleware`'s own
+  default when handed no policy is `HostExecutionPolicy`. That line going
+  missing would not have disabled the sandbox; it would have moved every
+  command onto the host. It is now both tested and checked at build time —
+  a shell that did not take the policy it was given is refused rather than
+  returned.
+- **`git` and `rg` are interpreters given the right option**, and both are
+  listed in the shipped examples because they are the point of a repository
+  profile. `git -c core.pager='sh -c id'`, `git clone ext::sh` and
+  `rg --pre /bin/sh` all ran. The docstring claiming the examples "name no
+  interpreter, and a test enforces that" was true of the test and false of the
+  file. Those argument forms are refused now, as an explicitly incomplete
+  denylist, and the claim says what it actually covers.
+
+**Unverified:** no Docker daemon was available while building this, so the
+container isolation flags are set and read but were not observed running.
+Before enabling the shell, run this **where the app runs**, with the flags the
+policy actually passes:
+
+```bash
+docker run --rm --network none --read-only --user nobody \
+  python:3.12-slim /bin/bash -c 'echo ok'
+```
+
+The default image was Alpine until the audit, which ships no `/bin/bash`. And
+note where the app runs: **the image built by `dockers/Dockerfile` has no
+Docker CLI and the compose file mounts no socket**, so the shell capability
+cannot run under Compose at all. Giving the app container the host daemon would
+make a sandbox escape a host compromise, which is the opposite of the point.
+
+### Fixed
+
+- The allowlist guard was defined as a sync `wrap_tool_call` while the app
+  drives the graph with `astream`, so LangGraph would have raised
+  `NotImplementedError` on every shell call and the guard would never have run.
+  Its tests called the sync hook directly and passed — the method production
+  never reaches. Never released.
+- Two tool calls in one model message raise a single interrupt carrying both,
+  and answering it with one decision raises, wedging the thread. Every stopped
+  action is now shown and answered. Never released.
+- Only the inline form of a markdown image was defused in assistant text, so
+  `![a][ref]` with a link definition kept the whole exfiltration route open
+  while the module docstring said it was shut. Both forms are now defused.
+  Never released.
+- `example_profiles.json` asked for `workspace_root: "/workspace"` while both
+  `.env.example` files suggested `MCP_WORKSPACE_ROOT=/srv/workspaces`, so an
+  operator following both got a flagship profile whose workspace was silently
+  refused — no mount, `-w /`, read-only root, a log line and nothing else. The
+  two now agree, and a test asserts they keep agreeing. Never released.
+- The `repository` example approved four git subcommands while its allowlist
+  permitted every one of them, so `git commit`, `git rebase`, `git merge`,
+  `git rm`, `git branch -D` and `git stash drop` ran with nobody asked. All of
+  them now stop, and the profile's description says so instead of claiming the
+  profile only reads. Never released.
+- `PROMPT_CACHE_TTL` fell back on a *typo* but not on an *empty* value, while
+  `docker-compose.yaml` passes `PROMPT_CACHE_TTL=${PROMPT_CACHE_TTL:-}` — which
+  sets it to the empty string. Every agent build under Compose logged a warning
+  about a value nobody typed. Read-then-`or`, matching `shell.py` and
+  `sessions.py`.
 
 ---
 
@@ -322,7 +520,8 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 No changelog was kept. See the commit history from `5cd21de` (2025-07-08)
 onward.
 
-[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.4.1...main
+[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.5.0...main
+[0.5.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.5.0
 [0.4.1]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.1
 [0.4.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.0
 [0.3.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.3.0

@@ -40,7 +40,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Runtime config lives on a volume so tools added through the UI survive
 # container recreation; the previous relative path wrote into the image layer.
-ENV MCP_CONFIG_PATH=/app/data/config.json
+ENV MCP_CONFIG_PATH=/app/data/config.json \
+    MCP_PROFILES_PATH=/app/data/profiles.json
 
 RUN useradd --create-home --uid 1000 appuser \
     && mkdir -p /app/data \

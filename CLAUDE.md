@@ -7,9 +7,10 @@ wrong.
 ## Orientation
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before touching
-`src/mcp_agent/sessions.py`, `runtime.py`, `turns.py`, or the middleware wiring
-in `agent.py`. All four are load-bearing in ways that are not visible from the
-code alone, and each carries a comment recording the bug that shaped it. Those
+`src/mcp_agent/sessions.py`, `runtime.py`, `turns.py`, `shell.py`,
+`approvals.py`, or the middleware wiring in `agent.py`. All six are
+load-bearing in ways that are not visible from the code alone, and each carries
+a comment recording the bug that shaped it. Those
 comments are the design record. Do not delete one because it "explains what the
 code already says" — it does not, it explains what the code is not doing.
 
@@ -20,7 +21,7 @@ uv sync                                   # install, dev deps included
 uv run streamlit run app.py --server.port 8585
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src/mcp_agent app.py
-uv run pytest -q                          # 215 tests, no network, no API key
+uv run pytest -q                          # 486 tests, no network, no API key
 uv run python scripts/check_models.py     # verify the registry against the live API
 ```
 
@@ -32,6 +33,22 @@ Run all four checks before claiming a change is done. CI additionally runs
 **`app.py` is presentation only.** If you are about to add logic there, it
 belongs in `src/mcp_agent/` instead. The test for this is whether you would want
 to unit test it.
+
+**The shell capability is off unless two separate parties enable it** — an
+operator through `MCP_ENABLE_SHELL`, and a profile through `shell.enabled`.
+Never collapse that into one switch, never let a profile reach
+`HostExecutionPolicy` or choose its own mount, and never add an interpreter
+(`python`, `sh`, `make`, `find`, `pytest`, `xargs`) to a shipped example
+allowlist — listing one is listing `sh`. Tests enforce all of this; the one
+that reads the allowlist entries is
+`test_no_shipped_allowlist_names_an_interpreter`, and the nine-probe test
+beside it constrains the argument denylist only. Do not merge the two: the
+probe test stays green with `python` in the allowlist.
+[docs/PROFILES.md](docs/PROFILES.md) says why.
+
+**The allowlist is defence in depth, not the boundary.** The boundary is the
+sandbox. Do not spend effort making the allowlist into a shell parser; that is
+a losing position and the comments in `profiles.py` say so.
 
 **`usage.py` must stay a leaf.** `state.py` imports it, and that import must not
 pull in LangChain or an event loop.

@@ -473,3 +473,99 @@ def test_a_batch_draws_the_tool_call_before_the_answer_to_it():
     turn._future.result(timeout=10)
 
     assert [event.kind for event in turn] == ["tool", "text"]
+
+
+def test_resuming_continues_the_interrupted_turn_rather_than_starting_one():
+    """`Turn.resuming` is the only path back into a stopped turn.
+
+    Measured: making it call `run_query` instead left every test that goes
+    through the page green, because those install a spy in its place. The
+    stopped command would have stayed in the checkpoint forever while the
+    literal decision dict was sent to the model as a new question.
+    """
+    from langchain.agents import create_agent
+    from langchain_core.messages import AIMessage
+    from langchain_core.tools import tool
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from mcp_agent.approvals import approve, build_approval_middleware
+    from mcp_agent.profiles import Profile, ShellSettings
+    from mcp_agent.turns import Turn
+    from tests.fakes import ScriptedModel
+
+    ran: list[str] = []
+
+    @tool
+    def shell(command: str) -> str:
+        """Run a shell command."""
+        ran.append(command)
+        return f"ran {command}"
+
+    profile = Profile(
+        name="p", shell=ShellSettings(enabled=True, allow=("git",), approve=("git push",))
+    )
+    agent = create_agent(
+        ScriptedModel(
+            replies=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "shell", "args": {"command": "git push"}, "id": "c1"}],
+                ),
+                AIMessage(content="Done."),
+            ]
+        ),
+        [shell],
+        checkpointer=InMemorySaver(),
+        middleware=build_approval_middleware(profile),
+    )
+
+    first = Turn(agent, "push it", thread_id="tr", recursion_limit=10, timeout_seconds=10)
+    list(first)
+    assert first.result.awaiting_approval, first.result
+    assert ran == []
+
+    second = Turn.resuming(agent, approve(), thread_id="tr", recursion_limit=10, timeout_seconds=10)
+    events = list(second)
+
+    assert ran == ["git push"], "the approved command did not run"
+    assert second.result.text == "Done."
+    assert events, "the resumed turn drew nothing"
+
+
+def test_resuming_forwards_the_whole_interrupt():
+    """One decision per stopped action, and `Turn` is what carries the count.
+
+    Measured: dropping `pending=` from the forward left the suite green, and
+    any two-action interrupt would then raise on resume.
+    """
+    forwarded: dict = {}
+
+    import mcp_agent.turns as turns_module
+
+    async def spy(agent, decision, renderer, **kwargs):
+        forwarded.update(kwargs)
+        from mcp_agent.agent import QueryResult
+
+        return QueryResult(text="ok")
+
+    original = turns_module.resume_query
+    turns_module.resume_query = spy
+    try:
+        from mcp_agent.approvals import PendingApproval, StoppedAction
+
+        pending = PendingApproval(
+            actions=(StoppedAction("shell", "a"), StoppedAction("shell", "b"))
+        )
+        turn = turns_module.Turn.resuming(
+            object(),
+            {"type": "approve"},
+            thread_id="t",
+            recursion_limit=10,
+            timeout_seconds=5,
+            pending=pending,
+        )
+        list(turn)
+    finally:
+        turns_module.resume_query = original
+
+    assert forwarded.get("pending") is pending

@@ -16,6 +16,10 @@ wheels/
 # launches; ship example_config.json instead.
 config.json
 
+# Runtime profiles. Names directories and servers particular to one deployment,
+# and decides what the agent may run there; ship example_profiles.json instead.
+profiles.json
+
 # Tooling caches
 .pytest_cache/
 .ruff_cache/

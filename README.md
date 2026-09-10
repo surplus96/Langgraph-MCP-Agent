@@ -19,6 +19,13 @@
   Either way, applying a change rebuilds the agent without restarting the process
 - **Streaming Responses**: View agent responses and tool calls in real-time
 - **Conversation History**: Track and manage conversations with the agent
+- **Profiles**: What the agent is configured to *be* — which MCP servers to
+  open, whether it may run commands, which commands stop for a person, and the
+  ceilings on one run — written as JSON rather than code, so a team in any
+  industry configures it without editing Python. See [docs/PROFILES.md](docs/PROFILES.md)
+- **Shell commands, off by default**: A profile can give the agent a shell. It
+  takes an operator *and* a profile to enable, runs in a container with no
+  network, and matching commands stop for a human to approve before they run
 
 ## MCP Architecture
 
@@ -74,6 +81,15 @@ The port is published on `127.0.0.1` only. This application launches MCP
 servers as subprocesses, so do not expose it directly — put a reverse proxy
 with TLS and authentication in front of it first.
 
+**The shell capability does not work under Compose.** The image built by
+`dockers/Dockerfile` installs no Docker CLI and the compose file mounts no
+Docker socket, so a profile with `shell.enabled` fails at its first command.
+This is deliberate: giving the app container the host daemon would let a
+sandbox escape reach the host, which is the opposite of what the sandbox is
+for. Run from source if you want the shell, or on a runtime you have
+deliberately given a container sandbox. Everything else — MCP servers,
+profiles, approvals, limits — works under Compose.
+
 ## Install Directly from Source
 
 1. Clone the repository.
@@ -117,7 +133,13 @@ uv run streamlit run app.py --server.port 8585
 | `MCP_TOOL_TIMEOUT` | No | `60` | Seconds — not milliseconds — one tool call may run. Must stay below the sidebar's turn limit (60–600s, default 120), or a call still running at the turn deadline leaves the conversation unusable. The app warns when the two conflict. |
 | `CHECKPOINT_DB_PATH` | No | `data/checkpoints.db` | Where conversations are stored so they survive a restart. `:memory:` disables persistence. |
 | `PROMPT_CACHE_TTL` | No | `1h` | Lifetime of the cached prompt prefix, `5m` or `1h`. Any other value warns and falls back to `1h`. |
+| `MCP_PROFILES_PATH` | No | `profiles.json` | Where profiles are read from. With no file there is one profile: every configured server, no shell. |
+| `MCP_ENABLE_SHELL` | No | `false` | The operator's half of the shell switch. The profile sets the other half, and both are required. |
+| `MCP_SHELL_POLICY` | No | unset | `host` *permits* the host execution policy for profiles that ask for it. It does not impose it. |
+| `MCP_WORKSPACE_ROOT` | No | unset | The one directory a profile may mount into the sandbox; a profile's own `workspace_root` is honoured only inside it. Unset, or outside it, means **nothing is mounted** — under the default policy the container then runs `-w /` on a read-only root and commands can write nowhere. |
+| `MCP_SANDBOX_IMAGE` | No | `python:3.12-slim` | The container commands run in. Debian-based: they run through `/bin/bash`, which Alpine does not ship. |
 | `LOG_LEVEL` | No | `INFO` | Python logging level. |
+| `NODE_OPTIONS` | No | unset | Passed through to `npx`-launched MCP servers, not read by this application. The arm64 compose overlay sets `--max_old_space_size=2048`, because Node's default heap is where an `npx` server on Apple Silicon runs out first. |
 | `LANGSMITH_*` | No | tracing off | Read by the LangSmith SDK, not by this application. Enabling tracing sends every prompt, tool result and model response to a third party. |
 
 With `USE_LOGIN=true` and either credential blank, the app refuses to render a
@@ -162,7 +184,7 @@ uv sync              # install, including dev dependencies
 uv run ruff check .  # lint
 uv run ruff format . # format
 uv run mypy src/mcp_agent app.py
-uv run pytest -q     # 215 tests
+uv run pytest -q     # 486 tests
 ```
 
 ## Usage
@@ -192,12 +214,13 @@ Settings** again to rebuild the agent.
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit together and why: the event loop, MCP session lifecycle, prompt caching, token accounting. |
 | [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) | The configuration file in full — every field, what is validated, troubleshooting. |
+| [docs/PROFILES.md](docs/PROFILES.md) | Profiles in full: the shell capability, the allowlist, approvals, and what none of them stop. |
 | [SECURITY.md](SECURITY.md) | Threat model, what each control does and does not do, reporting a vulnerability. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, style, and the standard a test has to meet here. |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in this release. |
 | [CLAUDE.md](CLAUDE.md) | Working agreement for AI coding agents in this repository. |
 | [docs/UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md) | The modernization plan this work followed, including what was deliberately deferred. |
-| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | **Proposal, not built.** The operation-agent design for the next version, and the decisions it is waiting on. |
+| [docs/DESIGN_0.5.0.md](docs/DESIGN_0.5.0.md) | The design 0.5.0 was built from, kept as the record of what was decided and why. Where it and the code differ, the code is right — [CHANGELOG.md](CHANGELOG.md) lists the differences. |
 
 ## License
 

@@ -15,7 +15,10 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, build_model
+from mcp_agent.approvals import PendingApproval, decisions_for, pending_from_state
+from mcp_agent.models import DEFAULT_EFFORT, MODEL_REGISTRY, Effort, ModelSpec, build_model
+from mcp_agent.profiles import DEFAULT_PROFILE, Profile
+from mcp_agent.shell import build_shell_middleware
 from mcp_agent.streaming import astream_graph
 from mcp_agent.usage import TokenUsage
 
@@ -28,7 +31,12 @@ logger = logging.getLogger(__name__)
 #: app, at the cost of 2.0x on the writes themselves.
 def _prompt_cache_ttl() -> Literal["5m", "1h"]:
     """Read the configured TTL, falling back rather than failing on a typo."""
-    value = os.environ.get("PROMPT_CACHE_TTL", "1h").strip()
+    # `.get(..., "1h")` was wrong: `docker-compose.yaml` passes
+    # `PROMPT_CACHE_TTL=${PROMPT_CACHE_TTL:-}`, which sets the variable to the
+    # empty string rather than leaving it unset, so the default never fired and
+    # every agent build under Compose logged the warning below. Read-then-`or`
+    # is the shape used in `shell.py` and `sessions.py` for the same reason.
+    value = os.environ.get("PROMPT_CACHE_TTL", "").strip() or "1h"
     if value in ("5m", "1h"):
         return value  # type: ignore[return-value]
     logger.warning("PROMPT_CACHE_TTL=%r is not '5m' or '1h'; using 1h", value)
@@ -119,6 +127,14 @@ class QueryResult:
     tool_log: str = ""
     error: str | None = None
     usage: TokenUsage = field(default_factory=TokenUsage)
+    #: Set when the turn stopped for a person rather than finishing. The turn
+    #: is neither a success nor a failure in that case — it is unfinished, and
+    #: resumes with `resume_query` once the decision is made.
+    pending_approval: PendingApproval | None = None
+
+    @property
+    def awaiting_approval(self) -> bool:
+        return self.pending_approval is not None
 
 
 @dataclass
@@ -233,45 +249,139 @@ async def discover_tools(mcp_config: dict[str, Any]) -> list[Any]:
     return pool.tools
 
 
+def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]:
+    """Assemble the middleware chain this profile asks for.
+
+    `create_agent` applies middleware as a chain, so the order below is
+    behaviour rather than style, and it is asserted in `tests/test_agent.py`
+    rather than left as a comment:
+
+    1. **Todos**, if the profile asked for them, so the model plans before it
+       does anything the rest of the chain has to police.
+    2. **Ceilings**, so a runaway is stopped before anything downstream spends
+       on it. `exit_behavior="end"` and not `"continue"` or `"error"`: ending
+       writes a `ToolMessage` for every call that was cut, which keeps the
+       tool_use/tool_result pair complete. That is the same invariant the
+       per-call timeout exists for — an unmatched tool call poisons the thread,
+       not just the turn.
+    3. **The shell**, if the profile and the operator both asked for one: its
+       allowlist guard, then the approval gate, then the artifact scrubber that
+       keeps the redaction's own cleartext out of the checkpoint, then the tool
+       itself. After the ceilings, so a runaway is capped before it reaches a
+       command line. The
+       guard being listed first does *not* keep a refused command from stopping
+       a person for approval — the gate hooks `after_model` and the guard is a
+       `wrap_tool_call`, so they run in different phases and list order cannot
+       reach it. `approvals.py` re-checks the allowlist in its own predicate
+       for that reason.
+    4. **Context editing**, if the profile asked for it. Before summarization
+       because it is the cheaper reclamation: dropping old tool output costs
+       nothing but the output, while summarizing spends a model call.
+    5. **Summarization**, a safety net rather than a routine saving. Its
+       trigger sits late for the same reason context editing sits before it —
+       both rewrite history, and both therefore throw away the cached prefix.
+    6. **Prompt caching last**, so it sees the final shape of everything above
+       it. Three breakpoints: the system prompt's last block, the last tool
+       definition, and a top-level one following the growing message tail.
+    """
+    from langchain.agents.middleware import (
+        ClearToolUsesEdit,
+        ContextEditingMiddleware,
+        ModelCallLimitMiddleware,
+        SummarizationMiddleware,
+        TodoListMiddleware,
+        ToolCallLimitMiddleware,
+    )
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+    chain: list[Any] = []
+
+    if profile.todos:
+        chain.append(TodoListMiddleware())
+
+    # Both constructors reject being given no limit at all, so a profile that
+    # sets neither gets no middleware rather than a disabled one.
+    if profile.limits.model_calls_per_run is not None:
+        chain.append(
+            ModelCallLimitMiddleware(
+                run_limit=profile.limits.model_calls_per_run, exit_behavior="end"
+            )
+        )
+    if profile.limits.tool_calls_per_run is not None:
+        chain.append(
+            ToolCallLimitMiddleware(
+                run_limit=profile.limits.tool_calls_per_run, exit_behavior="end"
+            )
+        )
+
+    chain.extend(build_shell_middleware(profile))
+
+    if profile.clear_tool_output_at is not None:
+        chain.append(
+            ContextEditingMiddleware(
+                edits=[
+                    ClearToolUsesEdit(
+                        trigger=profile.clear_tool_output_at,
+                        # The most recent results are what the model is
+                        # reasoning about right now. Clearing those would make
+                        # it repeat the calls it just made, which costs more
+                        # than the tokens it saved.
+                        keep=3,
+                        # The originating call stays, so every cleared result
+                        # still has its tool_use — the pairing survives the
+                        # edit, which is the invariant everything else in this
+                        # chain is also protecting.
+                        clear_tool_inputs=False,
+                    )
+                ]
+            )
+        )
+
+    chain.append(
+        SummarizationMiddleware(
+            model=model,
+            trigger=("tokens", int(spec.context_window * SUMMARIZE_AT_FRACTION)),
+        )
+    )
+    chain.append(AnthropicPromptCachingMiddleware(ttl=_prompt_cache_ttl()))
+    return chain
+
+
+def system_prompt_for(profile: Profile) -> str:
+    """The base prompt plus whatever the profile adds.
+
+    Appended rather than replaced: the base prompt carries the rules about tool
+    use that hold whatever the profile is for, and a profile that replaced it
+    would have to restate them to stay correct.
+    """
+    if not profile.system_prompt.strip():
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\n\n{profile.system_prompt.strip()}"
+
+
 async def build_agent(
     model_id: str,
     tools: list[Any],
     checkpointer: InMemorySaver,
     effort: Effort = DEFAULT_EFFORT,
+    profile: Profile = DEFAULT_PROFILE,
 ) -> AgentBundle:
     """Build the ReAct agent over already-discovered tools."""
     from langchain.agents import create_agent
-    from langchain.agents.middleware import SummarizationMiddleware
-    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
     spec = MODEL_REGISTRY[model_id]
     model = build_model(model_id, effort)
+    prompt = system_prompt_for(profile)
 
     agent = create_agent(
         model,
         tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=prompt,
         checkpointer=checkpointer,
-        # Sets three cache breakpoints: the system prompt's last block, the
-        # last tool definition (one trailing breakpoint covers the whole
-        # contiguous tool block), and a top-level one that follows the growing
-        # message tail. All were previously re-sent at full price on every ReAct
-        # iteration — up to `recursion_limit` times per user turn, not once.
-        middleware=[
-            # A safety net, not a routine cost saving. With a 1M context window
-            # a chat session realistically never reaches this, but without it a
-            # long one eventually fails outright on a context-length error
-            # instead of degrading. Summarizing rewrites history and so
-            # invalidates the cached prefix, which is why the trigger sits late.
-            SummarizationMiddleware(
-                model=model,
-                trigger=("tokens", int(spec.context_window * SUMMARIZE_AT_FRACTION)),
-            ),
-            AnthropicPromptCachingMiddleware(ttl=_prompt_cache_ttl()),
-        ],
+        middleware=build_middleware(profile, model, spec),
     )
 
-    prefix_chars = len(SYSTEM_PROMPT) + sum(
+    prefix_chars = len(prompt) + sum(
         len(json.dumps({"name": t.name, "description": t.description}, default=str)) for t in tools
     )
     return AgentBundle(
@@ -279,6 +389,40 @@ async def build_agent(
         tool_count=len(tools),
         estimated_prefix_tokens=prefix_chars // _CHARS_PER_TOKEN,
     )
+
+
+async def _pending_approval(agent: Any, config: RunnableConfig) -> PendingApproval | None:
+    """Whether the graph stopped in front of a person, and on what.
+
+    An interrupt is not visible in the stream — it ends normally — so the only
+    place to see one is the checkpointed state afterwards. Never allowed to
+    raise: a turn that finished must not be reported as blocked because this
+    lookup failed.
+    """
+    try:
+        snapshot = await agent.aget_state(config)
+    except Exception:
+        logger.exception("Could not read graph state; assuming nothing is awaiting approval")
+        return None
+    return pending_from_state(snapshot)
+
+
+async def pending_for_thread(agent: Any, thread_id: str) -> PendingApproval | None:
+    """What ``thread_id`` is stopped on, read back from the checkpoint.
+
+    The lookup above runs only at the end of a turn, which is enough for as
+    long as the page lives. A reload does not qualify: it starts a fresh
+    Streamlit session, so `pending_approval` — session state — is gone, while
+    the checkpoint still holds the interrupt. Without this the page rebuilds
+    the transcript, presents the stopped turn as a finished answer, and
+    unlocks the input over a thread whose last tool call has no result.
+
+    `tests/test_approvals.py` already proved the *checkpoint* survives a
+    reload. Nothing had asked whether anything ever read it back, which is the
+    same shape of gap as the two dropped hops 0.5.0's second step had to add
+    tests for: the data was right and no one fetched it.
+    """
+    return await _pending_approval(agent, RunnableConfig(configurable={"thread_id": thread_id}))
 
 
 async def run_query(
@@ -290,26 +434,81 @@ async def run_query(
     recursion_limit: int,
     timeout_seconds: float | None = None,
 ) -> QueryResult:
-    """Run one turn against ``agent``, streaming into ``renderer``.
+    """Run one turn against ``agent``, streaming into ``renderer``."""
+    return await _drive(
+        agent,
+        {"messages": [HumanMessage(content=query)]},
+        renderer,
+        thread_id=thread_id,
+        recursion_limit=recursion_limit,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def resume_query(
+    agent: Any,
+    decision: dict[str, Any],
+    renderer: ChunkRenderer,
+    *,
+    thread_id: str,
+    recursion_limit: int,
+    timeout_seconds: float | None = None,
+    pending: PendingApproval | None = None,
+) -> QueryResult:
+    """Continue a turn that stopped for approval, with the decision made.
+
+    Same thread, so the graph picks up from the checkpoint that holds the
+    stopped call. A rejection is not an error: the middleware writes a
+    ToolMessage saying the user declined, the model reads it, and the turn
+    finishes normally.
+    """
+    from langgraph.types import Command
+
+    # One decision per stopped action. The middleware raises when the counts
+    # disagree, and a model that called two tools in one message raises one
+    # interrupt for both.
+    answers = decisions_for(pending, decision) if pending is not None else [decision]
+
+    return await _drive(
+        agent,
+        Command(resume={"decisions": answers}),
+        renderer,
+        thread_id=thread_id,
+        recursion_limit=recursion_limit,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def _drive(
+    agent: Any,
+    graph_input: Any,
+    renderer: ChunkRenderer,
+    *,
+    thread_id: str,
+    recursion_limit: int,
+    timeout_seconds: float | None = None,
+) -> QueryResult:
+    """Stream one pass of the graph, whether it is starting or resuming.
 
     The timeout is applied here rather than by the caller, so that a turn cut
     short still reports the text it streamed and the tokens it already spent.
     Cancelling from outside would strand both in this frame.
     """
     accumulator = StreamAccumulator(renderer)
+    config = RunnableConfig(
+        recursion_limit=recursion_limit,
+        # thread_id belongs under `configurable`; passing it at the
+        # top level only worked via an ensure_config fallback.
+        configurable={"thread_id": thread_id},
+    )
 
     try:
         async with asyncio.timeout(timeout_seconds):
             await astream_graph(
                 agent,
-                {"messages": [HumanMessage(content=query)]},
+                graph_input,
                 callback=accumulator,
-                config=RunnableConfig(
-                    recursion_limit=recursion_limit,
-                    # thread_id belongs under `configurable`; passing it at the
-                    # top level only worked via an ensure_config fallback.
-                    configurable={"thread_id": thread_id},
-                ),
+                config=config,
             )
     except TimeoutError:
         logger.warning("Turn exceeded %ss; keeping partial output", timeout_seconds)
@@ -326,6 +525,19 @@ async def run_query(
             tool_log=accumulator.tool_log,
             error=f"Error during query processing: {exc}",
             usage=accumulator.usage,
+        )
+
+    pending = await _pending_approval(agent, config)
+    if pending is not None:
+        # Checked before the empty-output rule below: a turn that stops at its
+        # first tool call has produced nothing yet, and reporting "the agent
+        # produced no output" for a command waiting on a person would be both
+        # wrong and impossible to act on.
+        return QueryResult(
+            text=accumulator.text,
+            tool_log=accumulator.tool_log,
+            usage=accumulator.usage,
+            pending_approval=pending,
         )
 
     if not accumulator.text and not accumulator.tool_log:

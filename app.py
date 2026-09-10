@@ -19,7 +19,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from mcp_agent import auth  # noqa: E402
-from mcp_agent.agent import build_agent, discover_tools  # noqa: E402
+from mcp_agent.agent import build_agent, discover_tools, pending_for_thread  # noqa: E402
+from mcp_agent.approvals import approve, reject  # noqa: E402
 from mcp_agent.config import (  # noqa: E402
     ConfigError,
     allowed_commands,
@@ -35,9 +36,18 @@ from mcp_agent.models import (  # noqa: E402
     MODEL_REGISTRY,
     available_models,
 )
-from mcp_agent.rendering import draw  # noqa: E402
+from mcp_agent.profiles import (  # noqa: E402
+    DEFAULT_PROFILE,
+    Profile,
+    ProfileError,
+    load_profiles,
+    profiles_path,
+    servers_for,
+)
+from mcp_agent.rendering import draw, without_images  # noqa: E402
 from mcp_agent.runtime import run_sync  # noqa: E402
 from mcp_agent.sessions import tool_timeout  # noqa: E402
+from mcp_agent.shell import resolve_policy, shell_enabled  # noqa: E402
 from mcp_agent.state import AppState  # noqa: E402
 from mcp_agent.turns import Turn  # noqa: E402
 from mcp_agent.usage import TokenUsage  # noqa: E402
@@ -234,7 +244,9 @@ def render_history() -> None:
     for message in state.history:
         avatar = "🧑‍💻" if message["role"] == "user" else "🤖"
         with st.chat_message(message["role"], avatar=avatar):
-            st.markdown(message["content"])
+            # Replayed assistant text is model output too, and an image embed
+            # in it fetches on every reload, not just once.
+            st.markdown(without_images(message["content"]))
             tool_log = message.get("tool_log")
             if tool_log:
                 with st.expander("🔧 Tool Call Information", expanded=False):
@@ -244,7 +256,7 @@ def render_history() -> None:
 # --- Session initialization ---------------------------------------------------
 
 
-def initialize_session(mcp_config: dict[str, Any]) -> bool:
+def initialize_session(mcp_config: dict[str, Any], profile: Profile = DEFAULT_PROFILE) -> bool:
     """Connect to MCP servers and build the agent. Returns success."""
     try:
         with st.spinner("🔄 Connecting to MCP server..."):
@@ -255,6 +267,7 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
                     tools,
                     get_checkpointer(),
                     effort=state.selected_effort,
+                    profile=profile,
                 ),
                 timeout=state.timeout_seconds,
             )
@@ -271,6 +284,23 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
     state.tool_count = bundle.tool_count
     state.prefix_tokens = bundle.estimated_prefix_tokens
     state.session_initialized = True
+
+    # A reload arrives here with `pending_approval` empty — it is session state
+    # and the session is new — over a checkpoint that may still hold an
+    # interrupt. Asking the graph is what makes "a pending approval survives a
+    # reload" true of the page rather than only of the database. This is the
+    # first moment it can be asked: the agent has to exist to be asked.
+    #
+    # Never fatal. An agent that built and a page that cannot tell whether it
+    # is blocked is worse than the same page with no agent at all, but only
+    # slightly; failing initialization over this would be worse than both.
+    try:
+        state.pending_approval = run_sync(
+            pending_for_thread(bundle.agent, state.thread_id), timeout=30
+        )
+    except Exception:
+        logger.exception("Could not check whether thread %s is awaiting approval", state.thread_id)
+
     return True
 
 
@@ -278,6 +308,54 @@ def initialize_session(mcp_config: dict[str, Any]) -> bool:
 
 with st.sidebar:
     st.subheader("⚙️ System Settings")
+
+    # A profile is what makes this usable outside the toolchain it was built
+    # against: which servers to open, whether a shell exists, what needs a
+    # person to approve it. With no profiles.json there is exactly one, and it
+    # is what every version before 0.5.0 did.
+    try:
+        profiles = load_profiles()
+    except ProfileError as exc:
+        logger.error("Could not load profiles: %s", exc)
+        st.error(f"❌ {exc}")
+        st.info(f"Fix or remove {profiles_path()} and reload.")
+        profiles = {DEFAULT_PROFILE.name: DEFAULT_PROFILE}
+
+    if state.selected_profile not in profiles:
+        state.selected_profile = next(iter(profiles))
+
+    previous_profile = state.selected_profile
+    if len(profiles) > 1:
+        names = list(profiles)
+        state.selected_profile = st.selectbox(
+            "🧭 Profile",
+            options=names,
+            index=names.index(state.selected_profile),
+            help="Which servers to open, whether a shell is available, and what needs approval.",
+        )
+    active_profile = profiles[state.selected_profile]
+    if active_profile.description:
+        st.caption(active_profile.description)
+
+    # Whether this agent can run commands is the single most consequential
+    # thing about it, and the profile file is not where the person using it
+    # looks. Both switches are reported, because either being off is the whole
+    # explanation for a shell that is not there.
+    if active_profile.shell.enabled:
+        if not shell_enabled():
+            st.info(
+                "🔒 This profile asks for a shell. `MCP_ENABLE_SHELL` is not set to "
+                "true, so it does not get one."
+            )
+        else:
+            permitted = ", ".join(sorted(active_profile.shell.allow))
+            if resolve_policy(active_profile) == "host":
+                st.error(
+                    "⚠️ Shell commands run **on this host**, as the process serving "
+                    f"this page — not in a container. Allowed: {permitted}."
+                )
+            else:
+                st.caption(f"🛡️ Shell enabled, sandboxed with no network. Allowed: {permitted}.")
 
     models = available_models()
     if not models:
@@ -314,7 +392,9 @@ with st.sidebar:
         st.caption(f"🎚️ Effort is not supported on {state.selected_model}.")
 
     if state.session_initialized and (
-        previous_model != state.selected_model or previous_effort != state.selected_effort
+        previous_model != state.selected_model
+        or previous_effort != state.selected_effort
+        or previous_profile != state.selected_profile
     ):
         st.warning("⚠️ Setting changed. Click 'Apply Settings' to re-initialize.")
 
@@ -453,9 +533,19 @@ with st.sidebar:
             logger.error("Could not apply MCP config: %s", exc)
             st.error(f"❌ {exc}")
         else:
-            if initialize_session(state.pending_mcp_config):
-                st.success("✅ New settings have been applied.")
-                st.rerun()
+            # The profile decides which of the configured servers to open. A
+            # profile naming one that is not there is an error rather than a
+            # silent omission: the user asked for a tool, and the agent
+            # failing to use it later says nothing about why.
+            try:
+                selected = servers_for(active_profile, state.pending_mcp_config)
+            except ProfileError as exc:
+                logger.error("Profile %r cannot be applied: %s", active_profile.name, exc)
+                st.error(f"❌ {exc}")
+            else:
+                if initialize_session(selected, active_profile):
+                    st.success("✅ New settings have been applied.")
+                    st.rerun()
 
     st.divider()
     st.subheader("🔄 Actions")
@@ -499,50 +589,99 @@ if not state.session_initialized:
 
 render_history()
 
-user_query = st.chat_input("💬 Enter your question")
+
+def drive(turn: Turn) -> Any:
+    """Draw one turn as it streams, and hand back its outcome.
+
+    Every Streamlit call here happens on the script thread, which is the only
+    thread allowed to make one; the agent runs on the background loop and the
+    events cross as data. `run_query` still owns the deadline, so a turn cut
+    short reports the text and tokens it managed to produce.
+    """
+    with st.chat_message("assistant", avatar="🤖"):
+        tool_placeholder = st.empty()
+        text_placeholder = st.empty()
+        for event in turn:
+            draw(event, text_placeholder, tool_placeholder)
+    return turn.result
+
+
+if state.pending_approval is not None:
+    waiting = state.pending_approval
+    with st.chat_message("assistant", avatar="🤖"):
+        if len(waiting) > 1:
+            st.warning(
+                f"⏸️ {len(waiting)} commands need your approval before they run. "
+                "One decision covers all of them."
+            )
+        else:
+            st.warning("⏸️ This command needs your approval before it runs.")
+
+        # Every stopped action, not just the first. They came from one model
+        # message and the graph will not move until all of them are answered,
+        # so showing one and hiding the rest would ask someone to decide about
+        # something they cannot see.
+        for action in waiting.actions:
+            st.code(action.command or json.dumps(action.args, indent=2), language="bash")
+
+        approve_col, reject_col = st.columns(2)
+        chosen = None
+        if approve_col.button("✅ Approve and run", use_container_width=True, type="primary"):
+            chosen = approve()
+        if reject_col.button("🚫 Reject", use_container_width=True):
+            chosen = reject()
+
+    if chosen is not None:
+        # Not cleared here. `record` sets it from the outcome, which is read
+        # back out of the graph, so it clears when the graph really moved on
+        # and stays when it did not. Two things follow: a resume that fails
+        # leaves the decision on offer, which is right because the graph is
+        # still interrupted; and a turn whose next command also needs approval
+        # stops again instead of running it.
+        try:
+            outcome = drive(
+                Turn.resuming(
+                    state.agent,
+                    chosen,
+                    thread_id=state.thread_id,
+                    recursion_limit=state.recursion_limit,
+                    timeout_seconds=state.timeout_seconds,
+                    pending=waiting,
+                )
+            )
+        except Exception as exc:
+            # `Turn` converts what happens *inside* the turn into a reported
+            # error, so reaching here means the wiring around it broke. The
+            # decision stays on offer because the graph is still interrupted,
+            # and a raw traceback on the page would leave no way back to it.
+            logger.exception("Resuming an approved turn failed")
+            st.error(f"Could not resume: {exc}. The command is still waiting.")
+        else:
+            state.record(outcome)
+            st.rerun()
+
+user_query = st.chat_input(
+    "💬 Enter your question",
+    disabled=state.pending_approval is not None,
+)
 if user_query:
     if not state.session_initialized:
         st.warning("⚠️ Agent is not initialized. Click 'Apply Settings' in the sidebar.")
     else:
         st.chat_message("user", avatar="🧑‍💻").markdown(user_query)
 
-        with st.chat_message("assistant", avatar="🤖"):
-            tool_placeholder = st.empty()
-            text_placeholder = st.empty()
-
-            # The turn runs on the background loop and streams events back
-            # here; every Streamlit call below happens on the script thread,
-            # which is the only thread allowed to make one. run_query still
-            # owns the deadline, so a turn cut short reports the text and
-            # tokens it managed to produce.
-            turn = Turn(
+        result = drive(
+            Turn(
                 state.agent,
                 user_query,
                 thread_id=state.thread_id,
                 recursion_limit=state.recursion_limit,
                 timeout_seconds=state.timeout_seconds,
             )
-            for event in turn:
-                draw(event, text_placeholder, tool_placeholder)
-            result = turn.result
+        )
 
-        state.usage = state.usage + result.usage
-        state.history.append({"role": "user", "content": user_query})
-        if result.error:
-            st.error(result.error)
-            state.history.append(
-                {
-                    "role": "assistant",
-                    "content": result.text or result.error,
-                    "tool_log": result.tool_log,
-                }
-            )
-        else:
-            state.history.append(
-                {
-                    "role": "assistant",
-                    "content": result.text,
-                    "tool_log": result.tool_log,
-                }
-            )
+        # No `st.error` here: `st.rerun()` on the next line discards the
+        # frame, so it never reached anyone. What the user actually reads is
+        # the transcript, which `record` writes.
+        state.record(result, user_query=user_query)
         st.rerun()

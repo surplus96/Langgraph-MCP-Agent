@@ -32,6 +32,9 @@ src/mcp_agent/             The application. No Streamlit import below this line
   ├── checkpoints.py       Conversation state that outlives the process.
   ├── turns.py             One turn, run on the loop, drawn on the caller's thread.
   ├── rendering.py         Which pane a streamed event is drawn into, and with what.
+  ├── profiles.py          What this agent is configured to be, as data.
+  ├── shell.py             The shell capability, and the two switches guarding it.
+  ├── approvals.py         Stopping a command so a person can look at it.
   ├── streaming.py         Graph stream → callback.
   ├── runtime.py           The one background event loop.
   ├── auth.py              The login gate.
@@ -366,9 +369,66 @@ everything else, and Streamlit refuses to draw from there. The two-column shape
 above is the point — everything indented under the loop runs on it, and only
 what comes back through the queue is drawn.
 
+## Capabilities and the middleware chain
+
+0.5.0 turns `build_agent`'s literal middleware list into one assembled from the
+profile. `create_agent` applies middleware as a chain, so the order **is**
+behaviour, and `tests/test_agent.py` asserts it as a list rather than as
+pairwise comparisons — a reorder moves one entry, and pairwise checks only
+notice if the pair they happened to compare is the pair that moved.
+
+```
+TodoList  →  ModelCallLimit  →  ToolCallLimit  →  [shell]  →  ContextEditing
+          →  Summarization   →  AnthropicPromptCaching
+```
+
+Everything except the last two is off unless a profile asks. `[shell]` is
+itself three entries, in this order and for this reason:
+
+```
+ShellAllowlistMiddleware  →  HumanInTheLoop  →  ShellToolMiddleware
+```
+
+The allowlist comes first so a command that may not run never stops a person
+for a decision that cannot matter — being asked, reading a command, approving
+it and having it refused anyway teaches you that your approval is decorative.
+**List order does not achieve that on its own.** `HumanInTheLoopMiddleware`
+hooks `after_model` while the guard is a `wrap_tool_call`, so the interrupt
+fires first whatever the order; the gate's predicate therefore requires
+`is_allowed` as well as `needs_approval`. That was found by writing the test
+for the ordering and watching it fail against correct code.
+
+Context editing sits before summarization because it is the cheaper
+reclamation: dropping old tool output costs nothing but the output, while
+summarizing spends a model call. Both rewrite history, so both discard the
+cached prefix — which is why both trigger late.
+
+### Approvals across the thread boundary
+
+The design said `Turn` would gain a third streamed event kind for a pending
+approval. It does not, because that is not how an interrupt presents: the
+stream **ends normally** and the interrupt is only visible afterwards, in the
+checkpointed state. So `run_query` reads it back with `aget_state` and the
+pending approval rides on `QueryResult`; `Turn.resuming` sends the decision
+with `Command(resume=...)` on the same thread.
+
+Two consequences worth keeping in mind:
+
+- The approval is re-read from the graph after every pass rather than cleared
+  on the click. A resume that fails therefore leaves the decision on offer,
+  which is right — the graph is still interrupted — and a turn whose *next*
+  command also needs approval stops again instead of running it.
+- One decision is sent per stopped action. A model that calls two tools in one
+  message raises a single interrupt carrying both, and the middleware counts
+  the decisions it gets back; answering two actions with one decision raises,
+  wedging the thread.
+
+This is the feature that made 0.4.0's durable checkpointer load-bearing: a
+pending approval survives a browser reload because it lives in the checkpoint.
+
 ## Testing
 
-215 tests, none of which need a network or an API key. The parts that matter:
+486 tests, none of which need a network or an API key. The parts that matter:
 
 - **`test_caching.py`** intercepts the middleware's own public hook, so "caching
   is wired up" is a checked claim rather than an assumption. Whether the cache
@@ -378,6 +438,15 @@ what comes back through the queue is drawn.
 - **`test_version.py`** fails when `__version__`, `pyproject.toml` and the
   Compose image tag disagree. They had drifted two releases apart, silently,
   because nothing imports `__version__`.
+- **`test_profiles.py`** covers what a profile *means*, including the rules
+  that refuse one. Several of its cases exist because a security review
+  demonstrated the input first: `ls > >(sh -c id)` past an allowlist of `ls`,
+  and `git -c user.name=x push` past an approval rule of `git push`.
+- **`test_shell.py`** and **`test_approvals.py`** drive a real `create_agent`
+  graph with a scripted model rather than stubbing the middleware. What an
+  interrupt looks like, and that a rejection returns a `ToolMessage`, are
+  claims about LangGraph — a stub of LangGraph would pass whether or not they
+  hold.
 - **`test_rendering.py`** covers `draw`, which is why `draw` is here rather than
   in `app.py`. Anything driving the script sees the page *after* `st.rerun()`,
   rebuilt from the transcript, so every branch of it was free: tool output could

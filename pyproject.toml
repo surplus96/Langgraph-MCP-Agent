@@ -1,9 +1,14 @@
 [project]
 name = "langgraph-mcp-agents"
-version = "0.4.1"
+version = "0.5.0"
 description = "LangGraph ReAct agent with MCP tool adapters, served through Streamlit"
 readme = "README.md"
 requires-python = ">=3.12"
+# Declared, not just shipped. Hatchling detects the LICENSE file and packages
+# it either way, but without this the built metadata carries no
+# License-Expression and the distribution reads "License: UNKNOWN" while
+# README.md shows an MIT badge — the artifact contradicting the project.
+license = "MIT"
 dependencies = [
     "langchain>=1.4.0",
     "langchain-anthropic>=1.7.1",
@@ -52,3 +57,10 @@ warn_redundant_casts = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# `tests/fakes.py` is imported as `tests.fakes`, and pytest's default prepend
+# import mode puts `tests/` on sys.path, not the root above it — so `tests` is
+# not a package there. `python -m pytest` happened to work anyway, because that
+# form adds the working directory, and running it that way hid a red CI for
+# four pushes while `uv run pytest` (the command CONTRIBUTING.md and CLAUDE.md
+# both give) failed at collection. Run the documented command.
+pythonpath = ["."]

@@ -29,6 +29,8 @@ service.
 | Risk | Control |
 |---|---|
 | Arbitrary command execution via a registered MCP server | `MCP_ALLOWED_COMMANDS` allowlist; `MCP_ALLOW_TOOL_EDIT` off by default |
+| Arbitrary command execution via the **shell capability** | Off unless an operator *and* a profile both enable it; sandboxed with no network; per-profile allowlist; human approval for named prefixes. See [docs/PROFILES.md](docs/PROFILES.md) |
+| A handed-over profile escalating privilege | `MCP_ENABLE_SHELL`, `MCP_SHELL_POLICY` and `MCP_WORKSPACE_ROOT` are operator-side; a profile cannot enable a shell, reach the host policy, or mount anything outside the operator's root |
 | Unauthenticated access to the UI | Login gate that fails closed |
 | Credentials committed to the repository | `config.json` and `.env` gitignored; gitleaks in CI and in pre-commit |
 | Known-vulnerable dependencies | `pip-audit` in CI against the locked resolution |
@@ -42,6 +44,31 @@ service.
   a mitigation, not a control — do not rely on it. The real control is not
   registering a data-fetching tool and a high-privilege tool in the same
   session.
+
+  0.5.0 narrows what a steered model can *do* — the sandbox has no network, the
+  allowlist bounds which commands exist, and consequential ones stop for a
+  person — but none of that stops it being steered. **A profile that pairs a
+  shell with a web-fetching MCP server rebuilds the exact combination 0.2.0
+  removed**, and nothing in the code prevents you writing one. The shipped
+  examples do not, and a test enforces that; your own profiles are yours.
+
+- **Exfiltration through the page itself.** Assistant replies render as
+  markdown, and an image embed is fetched by the viewer's browser without a
+  click. The sandbox's missing network does nothing about that, because the
+  request leaves the browser rather than the container.
+  `mcp_agent.rendering.without_images` defuses image syntax in both the
+  streamed and the replayed path, which closes the automatic case. It scans
+  rather than pattern-matches, and covers all four CommonMark spellings —
+  inline, full reference, collapsed reference and shortcut — including labels
+  carrying backslash escapes or nested brackets. That precision is not
+  decorative: two earlier versions used a regular expression, and each one
+  closed the spelling in front of it while leaving the neighbours open. Raw
+  HTML is not a route, because nothing in this project passes
+  `unsafe_allow_html`, so Streamlit escapes it.
+
+  Links are left intact — they need a click, and stripping them would cost the
+  model its ability to cite anything — so a user who clicks a link the model
+  wrote is still outside what this stops.
 - **Multi-tenancy.** There is one credential pair for the whole deployment.
   Everyone who logs in shares the same MCP configuration and the same
   subprocess privileges.

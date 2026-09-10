@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from mcp_agent.agent import QueryResult, run_query
+from mcp_agent.agent import QueryResult, resume_query, run_query
 from mcp_agent.runtime import get_loop
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,62 @@ class Turn:
         timeout_seconds: float | None = None,
         grace_seconds: float = 30.0,
     ) -> None:
+        self._launch(
+            lambda renderer: run_query(
+                agent,
+                query,
+                renderer,
+                thread_id=thread_id,
+                recursion_limit=recursion_limit,
+                timeout_seconds=timeout_seconds,
+            ),
+            timeout_seconds=timeout_seconds,
+            grace_seconds=grace_seconds,
+        )
+
+    @classmethod
+    def resuming(
+        cls,
+        agent: Any,
+        decision: dict[str, Any],
+        *,
+        thread_id: str,
+        recursion_limit: int,
+        timeout_seconds: float | None = None,
+        grace_seconds: float = 30.0,
+        pending: Any = None,
+    ) -> Turn:
+        """A turn that continues one stopped for approval, with the answer.
+
+        Identical to a fresh turn from this side — it streams, it is iterated
+        on the drawing thread, and it produces a `QueryResult`. The graph knows
+        it is a continuation because the thread's checkpoint holds the stopped
+        call, which is why the decision needs no other context.
+        """
+        turn = cls.__new__(cls)
+        turn._launch(
+            lambda renderer: resume_query(
+                agent,
+                decision,
+                renderer,
+                thread_id=thread_id,
+                recursion_limit=recursion_limit,
+                timeout_seconds=timeout_seconds,
+                pending=pending,
+            ),
+            timeout_seconds=timeout_seconds,
+            grace_seconds=grace_seconds,
+        )
+        return turn
+
+    def _launch(
+        self,
+        start: Any,
+        *,
+        timeout_seconds: float | None,
+        grace_seconds: float,
+    ) -> None:
+        """Put one coroutine on the loop and prepare to drain its events."""
         self._events: queue.Queue[TurnEvent] = queue.Queue()
         self._result: QueryResult | None = None
         # `run_query` owns the turn deadline so a cut-short turn still reports
@@ -106,15 +162,7 @@ class Turn:
         self._deadline = None if timeout_seconds is None else timeout_seconds + grace_seconds
         self._started = time.monotonic()
         self._future = asyncio.run_coroutine_threadsafe(
-            run_query(
-                agent,
-                query,
-                _QueuedRenderer(self._events),
-                thread_id=thread_id,
-                recursion_limit=recursion_limit,
-                timeout_seconds=timeout_seconds,
-            ),
-            get_loop(),
+            start(_QueuedRenderer(self._events)), get_loop()
         )
 
     def __iter__(self):

