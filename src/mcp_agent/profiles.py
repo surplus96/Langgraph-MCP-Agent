@@ -311,6 +311,13 @@ _ARGUMENT_EXECUTORS = frozenset(
         "--upload-pack",
         "--receive-pack",
         "--use-compress-program",
+        # Both demonstrated against this project's own examples by a
+        # pre-release review, executing `id`: `git --exec-path=DIR <subcmd>`
+        # runs DIR/git-<subcmd>, and `rg --hostname-bin` runs the binary it is
+        # handed. The docs had enumerated each binary's executors and both
+        # enumerations were short by one.
+        "--exec-path",
+        "--hostname-bin",
     }
 )
 
@@ -318,11 +325,29 @@ _ARGUMENT_EXECUTORS = frozenset(
 #: substring because it appears inside a URL rather than as its own token.
 _EMBEDDED_EXECUTORS = ("ext::",)
 
+#: Subcommands that turn a listed command into a way to run another, keyed by
+#: the command they belong to. Only `git config` so far, and it matters because
+#: it is the *persistent* spelling of a form already refused above:
+#: `git -c alias.x='!cmd'` is transient and blocked, while
+#: `git config alias.x '!cmd'` writes the identical setting into `.git/config`
+#: in the mounted workspace and survives the process. A review ran the pair —
+#: `git config alias.pwn '!id'` then `git pwn` — against the shipped
+#: `repository` profile: both permitted, neither stopping for a person, the
+#: second arbitrary execution.
+#:
+#: Keyed by command rather than added to the set above, because `config` is an
+#: ordinary word: a bare `config` in that set would refuse `ls config` and
+#: `cat config` for every profile. It still over-matches within `git` —
+#: `git log config` is refused — which is the safe direction and the same one
+#: the approval matcher takes.
+_SUBCOMMAND_EXECUTORS: dict[str, frozenset[str]] = {"git": frozenset({"config"})}
+
 
 def _executes_something_else(words: list[str]) -> bool:
     """Whether an argument turns this command into a way to run another."""
+    subcommands = _SUBCOMMAND_EXECUTORS.get(words[0], frozenset()) if words else frozenset()
     for word in words[1:]:
-        if word in _ARGUMENT_EXECUTORS:
+        if word in _ARGUMENT_EXECUTORS or word in subcommands:
             return True
         # `--config=x` and `--pre=x` are the same options spelled differently.
         head = word.split("=", 1)[0]

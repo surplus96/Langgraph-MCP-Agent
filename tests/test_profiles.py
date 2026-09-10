@@ -587,6 +587,66 @@ def test_the_shipped_profiles_fit_the_workspace_root_the_env_examples_suggest():
         )
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git config alias.pwn '!id'",
+        "git config --global core.pager 'sh -c id'",
+        "git -C /tmp config alias.pwn '!id'",
+        "git --exec-path=/tmp/evil pwnsub",
+        "rg --hostname-bin /tmp/hb.sh --hyperlink-format 'file://{host}{path}' pat f",
+    ],
+)
+def test_the_persistent_spellings_of_a_blocked_option_are_blocked_too(command, monkeypatch):
+    """`git -c` was refused and `git config` was not, which is the same thing.
+
+    `git -c alias.x='!cmd'` is transient; `git config alias.x '!cmd'` writes
+    the identical setting into `.git/config` in the mounted workspace and
+    outlives the process. A review ran the pair against the shipped
+    `repository` profile — `git config alias.pwn '!id'` then `git pwn` — and
+    got arbitrary execution with nothing stopping for a person, because an
+    alias reaches every approved subcommand without naming one.
+
+    `--exec-path` and `--hostname-bin` are here for the same reason: both were
+    demonstrated executing `id`, and both sit in binaries whose executors the
+    documentation had enumerated. The enumerations were each short by one.
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv(
+        "MCP_PROFILES_PATH", str(Path(__file__).parent.parent / "example_profiles.json")
+    )
+
+    for profile in load_profiles().values():
+        if profile.shell.enabled:
+            assert is_allowed(command, profile.shell) is False, f"{profile.name} permits {command}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git status", "git log --oneline", "git diff HEAD", "cat config", "ls config", "rg pat ."],
+)
+def test_refusing_a_subcommand_does_not_refuse_the_ordinary_ones(command, monkeypatch):
+    """The collateral-damage half, and the reason `config` is keyed by command.
+
+    A bare `config` in `_ARGUMENT_EXECUTORS` would refuse `cat config` and
+    `ls config` for every profile, because that list is checked against every
+    word of every command. Keyed under `git`, it costs only `git log config` —
+    which is refused, over-matching in the safe direction.
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv(
+        "MCP_PROFILES_PATH", str(Path(__file__).parent.parent / "example_profiles.json")
+    )
+
+    profiles = load_profiles()
+    settings = (
+        profiles["repository"].shell if command.startswith("git") else profiles["analysis"].shell
+    )
+    assert is_allowed(command, settings) is True, f"{command} was refused"
+
+
 def test_no_shipped_approval_rule_is_dead(monkeypatch):
     """A rule for a command the allowlist refuses can never fire.
 

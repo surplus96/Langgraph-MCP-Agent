@@ -64,7 +64,11 @@ def test_both_switches_build_the_shell_and_its_guard(monkeypatch):
     built = build_shell_middleware(_profile())
 
     names = [type(m).__name__ for m in built]
-    assert names == ["ShellAllowlistMiddleware", "ShellToolMiddleware"], names
+    assert names == [
+        "ShellAllowlistMiddleware",
+        "RedactionArtifactScrubber",
+        "ShellToolMiddleware",
+    ], names
 
 
 def test_the_guard_comes_before_the_tool_it_guards(monkeypatch):
@@ -74,7 +78,7 @@ def test_the_guard_comes_before_the_tool_it_guards(monkeypatch):
     built = build_shell_middleware(_profile())
 
     assert type(built[0]).__name__ == "ShellAllowlistMiddleware"
-    assert any(tool.name == SHELL_TOOL_NAME for tool in built[1].tools)
+    assert any(tool.name == SHELL_TOOL_NAME for tool in built[-1].tools)
 
 
 # --- Where a command runs -------------------------------------------------------
@@ -522,6 +526,7 @@ def test_the_approval_gate_is_in_the_built_shell(monkeypatch):
     assert names == [
         "ShellAllowlistMiddleware",
         "HumanInTheLoopMiddleware",
+        "RedactionArtifactScrubber",
         "ShellToolMiddleware",
     ], names
 
@@ -531,7 +536,11 @@ def test_a_profile_with_no_approval_rules_still_gets_guard_and_tool(monkeypatch)
 
     names = [type(m).__name__ for m in build_shell_middleware(_profile(approve=()))]
 
-    assert names == ["ShellAllowlistMiddleware", "ShellToolMiddleware"], names
+    assert names == [
+        "ShellAllowlistMiddleware",
+        "RedactionArtifactScrubber",
+        "ShellToolMiddleware",
+    ], names
 
 
 @pytest.mark.parametrize(
@@ -598,3 +607,128 @@ def test_ordinary_uses_of_those_commands_still_work(command):
     """A denylist that stops the profile doing its job would just be turned off."""
     settings = ShellSettings(enabled=True, allow=("git", "rg", "find"))
     assert is_allowed(command, settings) is True
+
+
+# --- What the tool result is allowed to leave behind ------------------------------
+
+
+def _redacted_message(secret: str):
+    """What `ShellToolMiddleware` hands back: content clean, artifact raw."""
+    from langchain_core.messages import ToolMessage
+
+    return ToolMessage(
+        content="ANTHROPIC_API_KEY=[REDACTED_ANTHROPIC_KEY]\n",
+        tool_call_id="c1",
+        name=SHELL_TOOL_NAME,
+        artifact={
+            "exit_code": 0,
+            "redaction_matches": [
+                {"type": "anthropic_key", "value": secret, "start": 18, "end": 55}
+            ],
+        },
+    )
+
+
+class _Request:
+    tool_call = {"name": SHELL_TOOL_NAME, "args": {"command": "cat .env"}, "id": "c1"}
+
+
+def _scrub(message):
+    import asyncio
+
+    from mcp_agent.shell import build_artifact_scrubber
+
+    async def handler(_request):
+        return message
+
+    async def run():
+        return await build_artifact_scrubber().awrap_tool_call(_Request(), handler)
+
+    return asyncio.run(run())
+
+
+def test_the_cleartext_secret_does_not_survive_the_tool_result():
+    """Redaction cleaned the content and handed the secret back beside it.
+
+    `artifact["redaction_matches"]` is a list of `PIIMatch`, and
+    `PIIMatch["value"]` is the unredacted match. A security review ran this end
+    to end and read an Anthropic key off `data/checkpoints.db` while both the
+    screen and the model showed `[REDACTED_ANTHROPIC_KEY]` — the redaction had
+    made the leak quieter, not smaller, which is the worse of the two.
+    """
+    secret = "sk-ant-api03-REALLOOKINGSECRETVALUE123456"
+
+    scrubbed = _scrub(_redacted_message(secret))
+
+    assert secret not in str(scrubbed.artifact)
+    assert secret not in str(scrubbed.content)
+
+
+def test_scrubbing_keeps_the_count_and_the_pairing():
+    """What is worth keeping is kept: how many, and which tool call it answers.
+
+    "three secrets were removed here" is useful when debugging and carries
+    nothing. Dropping the whole message instead would strand the tool_use and
+    poison the thread, which is the failure 0.4.1 fixed.
+    """
+    scrubbed = _scrub(_redacted_message("sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA"))
+
+    matches = scrubbed.artifact["redaction_matches"]
+    assert len(matches) == 1
+    assert matches[0]["type"] == "anthropic_key"
+    assert "value" not in matches[0]
+    assert scrubbed.artifact["exit_code"] == 0
+    assert scrubbed.tool_call_id == "c1"
+
+
+def test_a_result_with_nothing_redacted_is_passed_through_untouched():
+    """The ordinary case must not be reshaped by a control for the rare one."""
+    from langchain_core.messages import ToolMessage
+
+    plain = ToolMessage(
+        content="ok", tool_call_id="c1", name=SHELL_TOOL_NAME, artifact={"exit_code": 0}
+    )
+
+    assert _scrub(plain) is plain
+
+
+def test_the_secret_does_not_reach_the_checkpoint_on_disk(tmp_path):
+    """The claim three documents make, tested where they make it.
+
+    `docs/PROFILES.md`, `shell.py` and `CHANGELOG.md` all say the redaction is
+    there because what the shell reads lands in `data/checkpoints.db`
+    unencrypted. That was the one place it did not hold. Asserting on the
+    bytes, through the project's own checkpointer, because asserting on the
+    message shape is what let this ship.
+    """
+    import asyncio
+
+    import aiosqlite
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    secret = "sk-ant-api03-REALLOOKINGSECRETVALUE123456"
+    scrubbed = _scrub(_redacted_message(secret))
+    db = tmp_path / "checkpoints.db"
+
+    async def write_it() -> None:
+        connection = await aiosqlite.connect(str(db))
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+        await saver.aput(
+            RunnableConfig(configurable={"thread_id": "t", "checkpoint_ns": ""}),
+            {
+                "v": 1,
+                "id": "c1",
+                "ts": "2026-09-10T00:00:00+00:00",
+                "channel_values": {"messages": [scrubbed]},
+                "channel_versions": {"messages": 1},
+                "versions_seen": {},
+            },
+            {"source": "loop", "step": 1, "parents": {}},
+            {"messages": 1},
+        )
+        await connection.close()
+
+    asyncio.run(write_it())
+    assert secret.encode() not in db.read_bytes()

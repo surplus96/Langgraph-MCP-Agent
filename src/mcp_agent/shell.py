@@ -163,6 +163,10 @@ SANDBOX_USER = "nobody"
 #: Not a secret scanner. It catches the provider tokens this project's users
 #: are most likely to have lying about, and it is the last line rather than the
 #: first: the sandbox is why the file is not reachable in the first place.
+#:
+#: These rules alone did not keep anything out of the checkpoint — the
+#: middleware hands the raw matches back on the same message it redacted. See
+#: :func:`build_artifact_scrubber`, which is the half that closes it.
 SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     ("anthropic_key", r"sk-ant-[A-Za-z0-9_\-]{16,}"),
     ("openai_key", r"\bsk-[A-Za-z0-9]{20,}"),
@@ -317,6 +321,79 @@ def build_allowlist_guard(profile: Profile) -> Any:
     return guard
 
 
+#: The artifact key `ShellToolMiddleware` uses to hand back what it redacted.
+#: Each entry is a `PIIMatch`, and `PIIMatch["value"]` is the secret in
+#: cleartext.
+_REDACTION_MATCHES = "redaction_matches"
+
+
+def build_artifact_scrubber() -> Any:
+    """Middleware that drops the cleartext secrets the redaction hands back.
+
+    `ShellToolMiddleware` redacts the tool message's *content* and then
+    attaches the raw matches to the same message:
+    ``artifact["redaction_matches"]`` is a list of ``PIIMatch``, and
+    ``PIIMatch["value"]`` is the unredacted secret. That message goes into
+    graph state, and graph state is what `AsyncSqliteSaver` writes to
+    ``data/checkpoints.db`` — unencrypted, on the mounted volume, for as long
+    as the conversation exists.
+
+    So the redaction protected the model's context and the visible transcript,
+    and not the checkpoint — which is the one thing this project's own
+    documentation named as the reason for having it. A pre-release security
+    review ran it end to end and read the key back off disk while the screen
+    and the model both showed ``[REDACTED_ANTHROPIC_KEY]``. Redaction made the
+    leak quieter rather than smaller, which is the worse of the two failures:
+    nobody goes looking for a leak they have been shown is handled.
+
+    The count survives, because "three secrets were removed from this output"
+    is worth having when debugging and carries nothing. Only the values go.
+
+    Keyed on the artifact rather than on the tool name: any tool that grows
+    the same key has the same leak, and this should not have to be extended a
+    second time to cover it.
+    """
+    from langchain.agents.middleware import wrap_tool_call
+
+    @wrap_tool_call(name="RedactionArtifactScrubber")
+    async def scrub(request: Any, handler: Any) -> Any:
+        result = await handler(request)
+
+        artifact = getattr(result, "artifact", None)
+        if not isinstance(artifact, dict) or _REDACTION_MATCHES not in artifact:
+            return result
+
+        matches = artifact.get(_REDACTION_MATCHES) or []
+        scrubbed = dict(artifact)
+        scrubbed[_REDACTION_MATCHES] = [
+            {key: value for key, value in match.items() if key != "value"}
+            if isinstance(match, dict)
+            else match
+            for match in matches
+        ]
+
+        try:
+            result.artifact = scrubbed
+        except Exception:
+            # Fail closed, but not by dropping the message: an absent
+            # tool_result strands the tool_use and poisons the thread, which is
+            # the failure 0.4.1 fixed and the one the refusal path above is
+            # shaped to avoid. Replace it instead — same content, same id, no
+            # artifact at all, so nothing unredacted reaches the checkpoint.
+            logger.exception("Could not scrub a redaction artifact; dropping the artifact")
+            from langchain_core.messages import ToolMessage
+
+            return ToolMessage(
+                content=getattr(result, "content", ""),
+                tool_call_id=request.tool_call["id"],
+                name=request.tool_call.get("name", SHELL_TOOL_NAME),
+                status=getattr(result, "status", "success"),
+            )
+        return result
+
+    return scrub
+
+
 def build_shell_middleware(profile: Profile) -> list[Any]:
     """The shell capability for this profile, or nothing at all.
 
@@ -364,4 +441,11 @@ def build_shell_middleware(profile: Profile) -> list[Any]:
     # that half on the strength of this line.
     from mcp_agent.approvals import build_approval_middleware
 
-    return [build_allowlist_guard(profile), *build_approval_middleware(profile), shell]
+    return [
+        build_allowlist_guard(profile),
+        *build_approval_middleware(profile),
+        # Between the gate and the tool: it has nothing to say about whether a
+        # command runs, only about what the result is allowed to leave behind.
+        build_artifact_scrubber(),
+        shell,
+    ]

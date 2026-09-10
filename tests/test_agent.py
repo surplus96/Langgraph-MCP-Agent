@@ -530,6 +530,7 @@ def test_the_shell_lands_in_the_chain_where_the_docstring_says(monkeypatch):
         "ToolCallLimitMiddleware",
         "ShellAllowlistMiddleware",
         "HumanInTheLoopMiddleware",
+        "RedactionArtifactScrubber",
         "ShellToolMiddleware",
         "ContextEditingMiddleware",
         "SummarizationMiddleware",

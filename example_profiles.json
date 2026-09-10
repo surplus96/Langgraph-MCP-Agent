@@ -4,7 +4,7 @@
     "mcp_servers": null
   },
   "repository": {
-    "description": "Work in a checked-out project and its history. Reads freely; every git command that writes — commit, rebase, merge, push, reset, clean, checkout, rm, branch -D, stash drop — stops for a person first. Plans with todos, and drops old command output once the conversation gets long.",
+    "description": "Work in a checked-out project and its history. The consequential git commands stop for a person — push, reset, clean, checkout, commit, rebase, merge, rm, branch -D, stash drop. That list is an aid, not a boundary: git has other spellings for the same effects, so the sandbox is what makes a miss survivable. Plans with todos, and drops old command output once the conversation gets long.",
     "system_prompt": "You are working inside a git repository. Read before you write, and say plainly when you cannot verify something rather than assuming it.",
     "mcp_servers": [
       "git",
@@ -45,7 +45,7 @@
     "clear_tool_output_at": 60000
   },
   "analysis": {
-    "description": "Read data files and summarise them. Reading only — computing over them needs an interpreter, which this deliberately does not have.",
+    "description": "Read data files and summarise them. No interpreter, deliberately — computing over the data would need one. The allowlist governs which executables may run and says nothing about redirection, so a listed command can still write with `>`; the sandbox bounds where.",
     "system_prompt": "You are examining data. State the shape and provenance of what you read before drawing conclusions from it.",
     "mcp_servers": [
       "filesystem"

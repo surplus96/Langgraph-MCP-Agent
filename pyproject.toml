@@ -4,6 +4,11 @@ version = "0.5.0"
 description = "LangGraph ReAct agent with MCP tool adapters, served through Streamlit"
 readme = "README.md"
 requires-python = ">=3.12"
+# Declared, not just shipped. Hatchling detects the LICENSE file and packages
+# it either way, but without this the built metadata carries no
+# License-Expression and the distribution reads "License: UNKNOWN" while
+# README.md shows an MIT badge — the artifact contradicting the project.
+license = "MIT"
 dependencies = [
     "langchain>=1.4.0",
     "langchain-anthropic>=1.7.1",

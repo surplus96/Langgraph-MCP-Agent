@@ -26,13 +26,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   earlier fix closed the spelling in front of it and left the neighbours open;
   that is why this is a scanner and why the shapes are enumerated in a test.
 
-Both were found by a pre-release audit, and both were reproduced before being
-fixed. Reverting either turns the suite red — 10 tests for the image scanner,
-2 for the reload, checked by mutation rather than assumed.
+- **`git config` walked past the approval gate.** `git -c alias.x='!cmd'` was
+  refused as an option; `git config alias.x '!cmd'` writes the identical
+  setting into `.git/config` in the mounted workspace, outlives the process,
+  and was permitted. Two commands against the shipped `repository` profile —
+  `git config alias.pwn '!id'` then `git pwn` — reached arbitrary execution
+  with nothing stopping for a person, because an alias reaches every approved
+  subcommand without naming one. Refused now, keyed under `git` rather than
+  added to the option list, so `cat config` and `ls config` still work.
+  `git --exec-path=DIR` and `rg --hostname-bin` went in beside it: both were
+  demonstrated executing `id`, and both sit in binaries whose executors the
+  documentation enumerated. Each enumeration was short by one.
+- **Redaction did not keep secrets out of the checkpoint**, which is the one
+  thing three documents named as its purpose. `ShellToolMiddleware` cleans the
+  tool message's content and then attaches the raw matches to the same
+  message — `artifact["redaction_matches"][…]["value"]` is the cleartext — and
+  that message goes into graph state, which `AsyncSqliteSaver` writes to
+  `data/checkpoints.db` unencrypted. A review read an Anthropic key back off
+  the file while the model and the screen both showed `[REDACTED_…]`. The
+  redaction made the leak quieter, not smaller. `build_artifact_scrubber` now
+  strips the values between the gate and the tool, keeping the match count.
+
+### Changed
+
+- **`docs/PROFILES.md` no longer presents the approval gate as a boundary.**
+  It is an aid to a cooperative model: `git restore` and `git switch` are the
+  modern spellings of `git checkout`, `cherry-pick` and `revert` write history,
+  and none of them stop. Enumerating subcommands cannot close a set that has no
+  boundary, so the doc says that instead of implying otherwise, and the two
+  shipped profile descriptions were rewritten to stop promising more than the
+  code delivers — `analysis` said "Reading only" while `>` redirection is
+  invisible to the matcher.
+- `license = "MIT"` is declared in `pyproject.toml`. The file always shipped,
+  but the built metadata carried no `License-Expression`, so the distribution
+  read "License: UNKNOWN" while `README.md` showed an MIT badge.
+- `docs/PROFILES.md`'s Compose copy step is `cp ../example_profiles.json …`.
+  The README has you `cd dockers` first, where the old path does not exist.
+
+All four were found by a pre-release audit, and every one was reproduced before
+being fixed. Reverting any turns the suite red — 10 tests for the image
+scanner, 2 for the reload, 2 for the subcommand refusal, 2 for the scrubber —
+checked by mutation rather than assumed.
 
 ---
 
-## [0.5.0] — 2026-09-09
+## [0.5.0] — 2026-09-10
 
 The chat window becomes an operation agent: it can run commands, and what it is
 allowed to do is written down as data rather than compiled in. The design and
@@ -101,7 +139,8 @@ audited before release. What the audit found, all demonstrated by running it:
 - Refused command lines are no longer logged verbatim, and shell output is
   redacted for provider-token shapes before the model sees it — otherwise it
   lands in `data/checkpoints.db`, unencrypted, until the conversation is
-  deleted.
+  deleted. (The redaction did not by itself keep the value off disk; see the
+  scrubber under Unreleased, which is what made this true.)
 
 A second pre-release pass, this time over the tests rather than the code, found
 22 of 47 mutations surviving — every *rule* pinned and almost every line that
@@ -481,7 +520,8 @@ rewrite of everything below `app.py`, with the UI behaviour preserved.
 No changelog was kept. See the commit history from `5cd21de` (2025-07-08)
 onward.
 
-[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.4.1...main
+[Unreleased]: https://github.com/surplus96/Langgraph-MCP-Agent/compare/v0.5.0...main
+[0.5.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.5.0
 [0.4.1]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.1
 [0.4.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.4.0
 [0.3.0]: https://github.com/surplus96/Langgraph-MCP-Agent/releases/tag/v0.3.0

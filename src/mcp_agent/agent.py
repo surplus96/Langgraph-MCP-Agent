@@ -265,8 +265,10 @@ def build_middleware(profile: Profile, model: Any, spec: ModelSpec) -> list[Any]
        per-call timeout exists for — an unmatched tool call poisons the thread,
        not just the turn.
     3. **The shell**, if the profile and the operator both asked for one: its
-       allowlist guard, then the approval gate, then the tool itself. After the
-       ceilings, so a runaway is capped before it reaches a command line. The
+       allowlist guard, then the approval gate, then the artifact scrubber that
+       keeps the redaction's own cleartext out of the checkpoint, then the tool
+       itself. After the ceilings, so a runaway is capped before it reaches a
+       command line. The
        guard being listed first does *not* keep a refused command from stopping
        a person for approval — the gate hooks `after_model` and the guard is a
        `wrap_tool_call`, so they run in different phases and list order cannot

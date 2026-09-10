@@ -25,7 +25,7 @@ To start from the shipped examples:
 
 ```bash
 cp example_profiles.json profiles.json      # from source
-cp example_profiles.json data/profiles.json # under Compose
+cp ../example_profiles.json data/profiles.json  # under Compose, from dockers/
 ```
 
 `profiles.json` is gitignored, as `config.json` and `.env` are, because a
@@ -140,12 +140,20 @@ until a documentation review pulled them apart.
 **And that rule is not followable by inspection.** Plenty of ordinary commands
 become interpreters given the right option:
 
-| Command | The option that runs something else |
+| Command | The form that runs something else |
 |---|---|
-| `git` | `-c alias.x='!cmd'`, `-c core.pager=…`, `clone ext::sh` |
-| `rg` | `--pre` |
+| `git` | `-c alias.x='!cmd'`, `-c core.pager=…`, `clone ext::sh`, `--exec-path=DIR`, **`config alias.x '!cmd'`** |
+| `rg` | `--pre`, `--hostname-bin` |
 | `find` | `-exec`, `-execdir`, `-ok` |
 | `tar` | `--use-compress-program` |
+
+The bold one is a subcommand rather than an option, and it is the reason this
+table should be read as a record of what was demonstrated rather than as a
+boundary. `git -c alias.x='!cmd'` was refused from the start; `git config
+alias.x '!cmd'` writes the identical setting into `.git/config` and outlives
+the process, and it was permitted — so a review reached arbitrary execution
+through the shipped `repository` profile in two commands, neither of which
+stopped for a person. Each round of this has closed the spelling in front of it.
 
 `git` and `rg` are the whole point of a repository profile, so removing them is
 not the answer. Those argument forms are refused instead — but that is a
@@ -162,6 +170,16 @@ appear in order but need not be adjacent, because `git -c user.name=x push`,
 that required adjacency. That means it over-matches — `git log push` stops for
 a rule of `git push`, and so does `git diff push` — which is the safe
 direction. It matches whole words, so `git log push-notes` does *not* stop.
+
+**The gate is an aid to a cooperative model, not a control against a steered
+one.** `approve` names command prefixes, and a model that has been talked into
+running something can reach the same effect under a name the list does not
+have: `git restore` and `git switch` are the modern spellings of `git
+checkout`, `git cherry-pick` and `git revert` write history, and an alias
+reaches all of them at once. Enumerating subcommands cannot close a set that
+has no boundary. Treat `approve` as the thing that makes a consequential
+command visible in the ordinary case, and the sandbox as the thing that makes
+the other case survivable.
 
 A rule for a command the allowlist refuses can never fire, so that nobody is
 asked to approve something that would be refused anyway. That is done by the
@@ -180,6 +198,15 @@ control from the sandbox rather than a consequence of it.
 Shell output is redacted for common provider-token shapes before the model sees
 it, because anything it reads lands in `data/checkpoints.db`, unencrypted,
 until the conversation is deleted. That is a last line, not a scanner.
+
+Redaction alone did not deliver that. `ShellToolMiddleware` cleans the tool
+message's content and then attaches the raw matches to the same message, so the
+cleartext went into graph state and straight into the checkpoint — the model
+and the screen showed `[REDACTED_…]` while the key sat on disk. A security
+review read one back off the file. `build_artifact_scrubber` now strips those
+values between the gate and the tool, keeping the count and dropping the
+secrets, which is what makes the sentence above true of the checkpoint and not
+only of the context.
 
 ## Environment variables
 
