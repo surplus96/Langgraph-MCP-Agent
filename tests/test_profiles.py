@@ -30,9 +30,15 @@ def test_path_defaults_beside_the_config(monkeypatch):
     assert profiles_path().name == "profiles.json"
 
 
-def test_path_is_configurable(monkeypatch):
-    monkeypatch.setenv("MCP_PROFILES_PATH", "/mnt/data/profiles.json")
-    assert str(profiles_path()) == "/mnt/data/profiles.json"
+def test_path_is_configurable(monkeypatch, tmp_path):
+    """Compared as a `Path`, not as a string.
+
+    `str(Path("/mnt/data/profiles.json"))` is `\\mnt\\data\\profiles.json` on
+    Windows, so the string form asserted the separator of whoever ran it.
+    """
+    wanted = tmp_path / "somewhere" / "profiles.json"
+    monkeypatch.setenv("MCP_PROFILES_PATH", str(wanted))
+    assert profiles_path() == wanted
 
 
 # --- The default is the previous release's behaviour ---------------------------
@@ -565,7 +571,7 @@ def test_the_shipped_profiles_fit_the_workspace_root_the_env_examples_suggest():
     root = Path(__file__).parent.parent
     suggested = set()
     for name in (".env.example", "dockers/.env.example"):
-        text = (root / name).read_text()
+        text = (root / name).read_text(encoding="utf-8")
         found = re.search(r"^#\s*MCP_WORKSPACE_ROOT=(\S+)$", text, re.MULTILINE)
         assert found, f"{name} no longer suggests an MCP_WORKSPACE_ROOT"
         suggested.add(found.group(1))
@@ -574,7 +580,7 @@ def test_the_shipped_profiles_fit_the_workspace_root_the_env_examples_suggest():
 
     import json
 
-    profiles = json.loads((root / "example_profiles.json").read_text())
+    profiles = json.loads((root / "example_profiles.json").read_text(encoding="utf-8"))
     asked = [
         (name, body["shell"]["workspace_root"])
         for name, body in profiles.items()

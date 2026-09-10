@@ -6,7 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A developer who followed the documented setup could not run the tests.**
+  `README.md` says `cp .env.example .env`, that file ships `USE_LOGIN=true`,
+  and `app.py` calls `load_dotenv(override=False)` — whose `find_dotenv` walks
+  up from `app.py` itself, so neither `monkeypatch.chdir` nor
+  `monkeypatch.delenv` escapes it. The delenv runs first, leaving the variable
+  unset, which is precisely the case `override=False` fills in from the file.
+  Every `AppTest` then stopped at the login gate with no widgets drawn.
+  Measured on a clean checkout: 39 of 48 in `test_app_smoke.py` failed with the
+  file present and all 48 passed without it. CI never saw it, because `.env` is
+  gitignored — the first person to hit it was a user following our own
+  instructions. `tests/conftest.py` now keeps a real `.env` out of the suite.
+- **Two tests assumed the developer's platform.** One read `.env.example`
+  without an encoding, so a Windows machine with a non-UTF-8 locale hit
+  `UnicodeDecodeError` on an em dash. The other asserted a path as a string,
+  which pins the separator of whoever ran it. Both were written and only ever
+  run on Linux; both were found by a user on Windows.
 
 ---
 
